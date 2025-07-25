@@ -330,7 +330,7 @@ class Base(nn.Module):
 class GCNNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, dropout: float = 0.0, num_classes: int = 2,
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
         """
         Generate graph model for graph convolutional (GCNC) network. The default model will generate two graph layers
         and one mlp layer.
