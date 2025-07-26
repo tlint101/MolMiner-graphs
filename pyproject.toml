@@ -2,7 +2,7 @@
 name = "molecular minter - graphs"
 version = "0.0.1"
 description = "Scripts to Create Molecular Graph Models"
-authors = ["Tony E. Lin <tonyelin@tmu.edu.tw"]
+authors = ["Tony E. Lin <tonyelin@tmu.edu.tw>"]
 license = "MIT"
 readme = "README.md"
 # repository = #todo add repository url
