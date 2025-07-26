@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "molecular minter - graphs"
+name = "molecular-miner-graphs"
 version = "0.0.1"
 description = "Scripts to Create Molecular Graph Models"
 authors = ["Tony E. Lin <tonyelin@tmu.edu.tw>"]
