@@ -5,7 +5,7 @@ description = "Scripts to Create Molecular Graph Models"
 authors = [{ name = "Tony E. Lin", email = "tonyelin@tmu.edu.tw" }]
 license = { text = "MIT" }
 readme = "README.md"
-repository = "None"
+# repository = #todo add repository url
 packages = [{ include = "mminer_graphs" }]
 
 [tool.poetry.dependencies]
