@@ -329,7 +329,7 @@ class Base(nn.Module):
 # Graph Convolutional Neural Network
 class GCNNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
-                 reduce_graph: bool = False, dropout: float = 0.0, num_classes: int = 2,
+                 reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
                  add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
         """
         Generate graph model for graph convolutional (GCNC) network. The default model will generate two graph layers
@@ -344,7 +344,9 @@ class GCNNet(Base):
             Set the number of MLP layers.
         :param reduce_graph: bool
             Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
-        :param dropout: float
+        :param graph_dropout: float
+            Set the graph dropout during activation.
+        :param mlp_dropout: float
             Indicate a dropout layer after each mlp layer. Defaults to 0 (no dropout).
         :param num_classes: int
             Number of classes for the output layer.
@@ -359,19 +361,23 @@ class GCNNet(Base):
         global graph_hidden_dim
         super().__init__()
         self.pooling = pooling
+        self.graph_dropout = graph_dropout
         self.is_fitted = False
 
         # set graph layers
         self.gcn_conv = nn.ModuleList()
+
         # set graph layers
-        # first layer -> input to hidden
-        self.gcn_conv.append(GCNConv(node_dim, hidden_dim))
-        # loop GCNConv layer
         graph_hidden_dim = hidden_dim
-        for x in range(graph_layers - 1):
-            graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
-            self.gcn_conv.append(GCNConv(graph_hidden_dim, graph_hidden_dim))
-            graph_hidden_dim = graph_hidden_dim
+        for x in range(graph_layers):
+            # for updating the nodes
+            in_dim = node_dim if x == 0 else graph_hidden_dim
+            self.gcn_conv.append(GCNConv(in_dim, hidden_dim))
+
+            # update dimensions for next layer
+            graph_hidden_dim = hidden_dim
+            if reduce_graph:
+                hidden_dim = round(hidden_dim / 2)
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -383,7 +389,7 @@ class GCNNet(Base):
 
         # get dimension of mlp layers
         mlp_dim = hidden_dim + add_feat
-        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, dropout)
+        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
         # info for plot
         self.train_loss = []
@@ -403,6 +409,7 @@ class GCNNet(Base):
         # graph layers
         for conv in self.gcn_conv:
             x = F.relu(conv(x, edge_index))
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
         x = _global_pooling(x, batch, pool_type=self.pooling)
@@ -427,8 +434,8 @@ class GCNNet(Base):
 # Graph Isomorphism Network with Edge Features
 class GINENet(Base):
     def __init__(self, node_dim: int = 142, edge_feat_dim: int = 16, hidden_dim: int = 64, graph_layers: int = 2,
-                 mlp_layers: int = 1, reduce_graph: bool = False, dropout: float = 0.0, num_classes: int = 2,
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+                 mlp_layers: int = 1, reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
+                 num_classes: int = 2, add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
         """
         Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
         graph layers and one mlp layer.
@@ -444,7 +451,9 @@ class GINENet(Base):
             Set the number of MLP layers.
         :param reduce_graph: bool
             Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
-        :param dropout: float
+        :param graph_dropout: float
+            Set the graph dropout during activation.
+        :param mlp_dropout: float
             Indicate a dropout layer after each mlp layer. Defaults to 0 (no dropout).
         :param num_classes: int
             Number of classes for the output layer.
@@ -459,6 +468,7 @@ class GINENet(Base):
         global reduced_graph_dim
         super().__init__()
         self.pooling = pooling
+        self.graph_dropout = graph_dropout
         self.is_fitted = False
 
         # set graph layers
@@ -467,11 +477,10 @@ class GINENet(Base):
         # set graph layers
         graph_hidden_dim = hidden_dim
         for x in range(graph_layers):
-            reduced_graph_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
-
             # for updating the nodes
+            in_dim = node_dim if x == 0 else graph_hidden_dim
             nnet = nn.Sequential(
-                nn.Linear(hidden_dim if x > 0 else node_dim, hidden_dim),
+                nn.Linear(in_dim, hidden_dim),
                 nn.BatchNorm1d(hidden_dim),  # normalize node embeddings
                 nn.ReLU(),
                 nn.Linear(hidden_dim, hidden_dim),
@@ -479,6 +488,11 @@ class GINENet(Base):
             )
 
             self.gine_conv.append(GINEConv(nn=nnet, edge_dim=edge_feat_dim))
+
+            # update dimensions for next layer
+            graph_hidden_dim = hidden_dim
+            if reduce_graph:
+                hidden_dim = round(hidden_dim / 2)
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -490,7 +504,7 @@ class GINENet(Base):
 
         # get dimension of mlp layers
         mlp_dim = graph_hidden_dim + add_feat
-        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, dropout)
+        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
         # info for plot
         self.train_loss = []
@@ -510,6 +524,7 @@ class GINENet(Base):
         # graph layers
         for conv in self.gine_conv:
             x = F.relu(conv(x, edge_index, edge_attr))
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
         x = _global_pooling(x, batch, pool_type=self.pooling)
@@ -533,10 +548,10 @@ class GINENet(Base):
 
 # GraphSAGE
 class GSAGENet(Base):
-    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2,
-                 mlp_layers: int = 1, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
-                 act: str = "relu", reduce_graph=False,
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
+                 graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
+                 act: str = "relu", reduce_graph=False, add_feats: Optional[Union[np.array, list, int]] = None,
+                 pooling: str = "mean"):
         """
         Generate a graph SAGE model neural network (GSAGENet). The default model will generate two graph layers and one
         mlp layer.
