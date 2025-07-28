@@ -2,10 +2,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINEConv, GINConv, NNConv, global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.nn import GCNConv, GINEConv, GraphSAGE, GATConv, global_mean_pool, global_max_pool, \
+    global_add_pool, SAGEConv
 from torch_geometric.loader import DataLoader
-from mminer_graphs.model.model_utils import set_seed
-from mminer_graphs.model.model_utils import mol_to_graph, get_device, OPTIMIZERS, CRITERIONS
+from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
@@ -246,10 +246,10 @@ class Base(nn.Module):
                 all_preds.append(preds)
 
             # conditional check to output as list or tensor
-            if return_type is "list":
+            if return_type == "list":
                 prediction = torch.cat(all_preds)
                 return prediction.tolist()
-            elif return_type is "tensor":
+            elif return_type == "tensor":
                 return torch.cat(all_preds)
             else:
                 raise TypeError(f"Type {return_type} not recognized!")
@@ -356,7 +356,7 @@ class GCNNet(Base):
             Set pooling method.
         """
 
-        global reduced_graph_dim
+        global graph_hidden_dim
         super().__init__()
         self.pooling = pooling
         self.is_fitted = False
@@ -369,9 +369,9 @@ class GCNNet(Base):
         # loop GCNConv layer
         graph_hidden_dim = hidden_dim
         for x in range(graph_layers - 1):
-            reduced_graph_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
-            self.gcn_conv.append(GCNConv(graph_hidden_dim, reduced_graph_dim))
-            graph_hidden_dim = reduced_graph_dim
+            graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+            self.gcn_conv.append(GCNConv(graph_hidden_dim, graph_hidden_dim))
+            graph_hidden_dim = graph_hidden_dim
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -479,7 +479,6 @@ class GINENet(Base):
             )
 
             self.gine_conv.append(GINEConv(nn=nnet, edge_dim=edge_feat_dim))
-            graph_hidden_dim = reduced_graph_dim
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -490,7 +489,7 @@ class GINENet(Base):
             add_feat = 0
 
         # get dimension of mlp layers
-        mlp_dim = hidden_dim + add_feat
+        mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, dropout)
 
         # info for plot
@@ -533,13 +532,240 @@ class GINENet(Base):
 
 
 # GraphSAGE
-class SAGENet(nn.Module):
-    pass
+class GSAGENet(Base):
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2,
+                 mlp_layers: int = 1, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
+                 act: str = "relu", reduce_graph=False,
+                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+        """
+        Generate a graph SAGE model neural network (GSAGENet). The default model will generate two graph layers and one
+        mlp layer.
+        :param node_dim: int
+            Length of node feature vector.
+        :param hidden_dim: int
+            Set the size of the hidden layers.
+        :param graph_layers: int
+            Number of graph layers.
+        :param mlp_layers: int
+            Set the number of MLP layers.
+        :param graph_dropout: float
+            Set the graph dropout during activation.
+        :param mlp_dropout: float
+            Set the dropout for each MLP layer.
+        :param num_classes: int
+            Set the number of output classes
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
+        :param reduce_graph: bool
+            Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of features to be added. If an int is given, it must correspond to the length of the additional
+            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            and used to append the MLP input dimensions accordingly.
+        :param pooling: str
+            Set pooling method.
+        """
+
+        super().__init__()
+        self.act = act
+        self.pooling = pooling
+        self.graph_dropout = graph_dropout
+        self.is_fitted = False
+
+        # set graph layers
+        self.sage_conv = nn.ModuleList()
+
+        # set graph layers
+        graph_hidden_dim = hidden_dim
+        in_channels = node_dim
+        for x in range(graph_layers):
+            if x > 0:
+                graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+
+            if x == 0:
+                self.sage_conv.append(
+                    SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
+                in_channels = graph_hidden_dim  # reset in_channels
+            else:
+                self.sage_conv.append(
+                    SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
+                in_channels = graph_hidden_dim  # reset in_channels for loop
+
+        # if a list of additional features are given, will be added to the graph latent array
+        if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
+            add_feat = len(add_feats[0])
+        elif isinstance(add_feats, int):
+            add_feat = add_feats
+        else:
+            add_feat = 0
+
+        # get dimension of mlp layers
+        mlp_dim = graph_hidden_dim + add_feat
+        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
+
+        # info for plot
+        self.train_loss = []
+        self.test_loss = []
+        self.train_accuracy = []
+        self.test_accuracy = []
+        self.train_precision = []
+        self.test_precision = []
+        self.mcc = []
+        self.recall = []
+        self.f1_score = []
+        self.roc_auc = []
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # check activation function
+        if self.act not in F_ACT:
+            raise ValueError(f"Unsupported activation function {self.act}"
+                             f"Only {list(F_ACT.keys())} are supported!")
+
+        # graph layers
+        act_fn = F_ACT[self.act]
+        for conv in self.sage_conv:
+            x = act_fn(conv(x, edge_index))
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
+
+        # readout layer
+        x = _global_pooling(x, batch, pool_type=self.pooling)
+
+        # concatenate additional features
+        if hasattr(data, "add_feats"):
+            if not isinstance(data.add_feats, torch.Tensor):
+                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            else:
+                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+
+            x = torch.cat([x, add_feats], dim=1)
+
+        # build mlp layer
+        for layer in self.mlp:
+            x = layer(x)
+        x = self.final_mlp(x)
+
+        return x
 
 
 # Graph Attention Network
-class GATNet(nn.Module):
-    pass
+class GATNet(Base):
+    def __init__(self, node_dim: int = 142, edge_feat_dim: Optional[int] = None, hidden_dim: int = 64, heads: int = 1,
+                 graph_layers: int = 2, mlp_layers: int = 1, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
+                 num_classes: int = 2, act: str = "relu", reduce_graph=False,
+                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+        """
+
+        :param node_dim: int
+            Length of node feature vector.
+        :param hidden_dim: int
+            Set the size of the hidden layers.
+        :param heads: int
+            Set the number of attention mechanisms to be used in parallel.
+        :param graph_layers: int
+            Set the number of graph layers
+        :param mlp_layers: int
+            Set the number of MLP layers.
+        :param graph_dropout: float
+            Set the dropout for the attention coefficients and during activation.
+        :param mlp_dropout: float
+            Set the dropout layer for each MLP layer.
+        :param num_classes: int
+            Set the number of output classes.
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
+        :param reduce_graph: bool
+            Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of features to be added. If an int is given, it must correspond to the length of the additional
+            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            and used to append the MLP input dimensions accordingly.
+        :param pooling: str
+            Set pooling method.
+        """
+
+        super().__init__()
+        self.act = act
+        self.pooling = pooling
+        self.graph_dropout = graph_dropout
+        self.is_fitted = False
+
+        # set graph layers
+        self.gat_conv = nn.ModuleList()
+
+        # set graph layers
+        graph_hidden_dim = hidden_dim
+        in_channels = node_dim
+        for x in range(graph_layers):
+            if x > 0:
+                graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+
+            if x == 0:
+                self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
+                                             edge_dim=edge_feat_dim, dropout=graph_dropout))
+                in_channels = graph_hidden_dim  # reset in_channels
+            else:
+                self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
+                                             edge_dim=edge_feat_dim, dropout=graph_dropout))
+                in_channels = graph_hidden_dim  # reset in_channels for loop
+
+        # if a list of additional features are given, will be added to the graph latent array
+        if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
+            add_feat = len(add_feats[0])
+        elif isinstance(add_feats, int):
+            add_feat = add_feats
+        else:
+            add_feat = 0
+
+        # get dimension of mlp layers
+        mlp_dim = graph_hidden_dim + add_feat
+        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
+
+        # info for plot
+        self.train_loss = []
+        self.test_loss = []
+        self.train_accuracy = []
+        self.test_accuracy = []
+        self.train_precision = []
+        self.test_precision = []
+        self.mcc = []
+        self.recall = []
+        self.f1_score = []
+        self.roc_auc = []
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # check activation function
+        if self.act not in F_ACT:
+            raise ValueError(f"Unsupported activation function {self.act}"
+                             f"Only {list(F_ACT.keys())} are supported!")
+
+        # graph layers
+        act_fn = F_ACT[self.act]
+        for conv in self.gat_conv:
+            x = act_fn(conv(x, edge_index))
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
+
+        # readout layer
+        x = _global_pooling(x, batch, pool_type=self.pooling)
+
+        # concatenate additional features
+        if hasattr(data, "add_feats"):
+            if not isinstance(data.add_feats, torch.Tensor):
+                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            else:
+                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+
+            x = torch.cat([x, add_feats], dim=1)
+
+        # build mlp layer
+        for layer in self.mlp:
+            x = layer(x)
+        x = self.final_mlp(x)
+
+        return x
 
 
 # Graph Isomorphism Network
