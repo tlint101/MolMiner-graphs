@@ -264,6 +264,10 @@ class Base(nn.Module):
             conv_layers = getattr(self, "gcn_conv")
         elif hasattr(self, "gine_conv"):
             conv_layers = getattr(self, "gine_conv")
+        elif hasattr(self, "sage_conv"):
+            conv_layers = getattr(self, "sage_conv")
+        elif hasattr(self, "gat_conv"):
+            conv_layers = getattr(self, "gat_conv")
         else:
             raise ValueError("No conv layers defined found!")
         for layer in conv_layers:
