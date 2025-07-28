@@ -7,7 +7,7 @@ The Molecular Miner - Graphs with PyTorch and focused on building deep learning 
 ## Install
 
 ```python
-pip install https://github.com/tlint101/mol-miner-graphs.git
+pip install git+https://<TOKEN>@github.com/<USERNAME>/mol-miner-graphs.git
 ```
 
 ## Overview
