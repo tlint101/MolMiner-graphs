@@ -3,6 +3,7 @@ import random
 from typing import Optional, Union
 import torch
 from torch_geometric.data import Data
+import torch.nn.functional as F
 from mminer_graphs.graph import AtomGraph, PharmacophoreGraph, FunctionalGraph, JunctionTreeGraph, ClusterGraph
 
 graph_type_dict = {
@@ -38,6 +39,15 @@ CRITERIONS = {
     # Others
     "cosine_embedding": torch.nn.CosineEmbeddingLoss,
     "triplet_margin": torch.nn.TripletMarginLoss,
+}
+
+F_ACT = {
+    "relu": F.relu,
+    "leaky_relu": lambda x: F.leaky_relu(x, negative_slope=0.01),
+    "gelu": F.gelu,
+    "elu": F.elu,
+    "silu": F.silu,  # Also known as Swish
+    "tanh": F.tanh,
 }
 
 
