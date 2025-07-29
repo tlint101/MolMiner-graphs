@@ -1,0 +1,22 @@
+name: mol-miner-graphs
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  - matplotlib-base>=3.10.3
+  - numpy>=2.0
+  - pandas>=2.1
+  - rdkit>=2023.09.5
+  - seaborn>=0.12.2
+  - datamol>=0.12.4
+  - pip
+  - pip:
+      - notebook
+      - scikit-learn>=1.6.1
+      - torch>=2.1.0 # torch==2.3.0 has deprecated code. update torch when keras updates.
+      - torch_geometric>=2.6.1
+      - shap>=0.48.0
+      - optuna>=4.4.0
+      - ipywidgets>=8.1.7  #todo modify script for installing torch and cuda on windows machines
+      - torchviz>=0.0.3
