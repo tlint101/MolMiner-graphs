@@ -218,15 +218,21 @@ class Base(nn.Module):
         return self
 
     @staticmethod
-    def predict(model: nn.Module, test_loader: Union[np.array, list], device: str = "auto", return_type: str = "list"):
+    def predict(model: nn.Module, test_loader: Union[np.array, list, DataLoader], device: str = "auto",
+                binary: Union[bool, float, str] = True, return_type: str = "list"):
         """
         Handle predictions for an input torch Dataloader.
         :param model: torch.nn.Module
             A trained torch model.
-        :param test_loader: Union[np.array, list]
+        :param test_loader: Union[np.array, list, DataLoader]
             Data for prediction. Must be converted into a graph and organized in an array or list.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
+        :param binary: Union[bool, float, str]
+            Set the output for classification models as binary or multi-class. A boolean value will set predictions to
+            be binary or multi-class predictions. If a float is given, then a binary predictions will be given with the
+            input float used as the cutoff for positive (1) labels. Input strings can be "multi" or "proba", where
+            "multi" will output a multi-class labels and "proba" will output a binary probability vector.
         :param return_type: str
             Set the return type of the prediction. Can be "tensor" or "list".
         :return:
@@ -242,8 +248,23 @@ class Base(nn.Module):
             for data in test_loader:
                 datapoint = data.to(fit_device)
                 output = model(datapoint)
-                preds = torch.argmax(output, dim=1)
-                all_preds.append(preds)
+                # set for binary, multi-class, or probability output
+                if binary == True or isinstance(binary, float):
+                    proba = F.softmax(output, dim=1)[:, 1]
+                    if isinstance(binary, float):
+                        proba = (proba > binary).long()
+                    else:
+                        proba = (proba >= 0.5).long()
+                # multi-class classification
+                elif binary == False or binary == "multi":
+                    proba = F.softmax(output, dim=1)
+                    proba = torch.argmax(proba, dim=1)
+                # output probabilities
+                elif binary == "proba":
+                    proba = F.softmax(output, dim=1)
+                else:
+                    raise ValueError("Only 'multi', 'proba', boolean, or float is supported!!")
+                all_preds.append(proba)
 
             # conditional check to output as list or tensor
             if return_type == "list":

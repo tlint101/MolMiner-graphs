@@ -1,11 +1,14 @@
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 from typing import Optional, Union
+from torchviz import make_dot
 from torch_geometric.data import DataLoader
+from mminer_graphs.model.model_utils import set_seed
 
 
 class Plots:
@@ -86,7 +89,8 @@ class Plots:
 
     def confusion_matrix(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
                          class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                         title: str = None, device: str = "auto", savepath: str = None):
+                         title: str = None, binary: Union[bool, float, str] = True, device: str = "auto",
+                         savepath: str = None):
         """
         Generate a confusion matrix for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -102,6 +106,8 @@ class Plots:
             Set the figure size.
         :param title: str
             Set the title of the figure. If None given, the default title will be used.
+        :param binary: Union[bool, float, str]
+            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
         :param device: str
             Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param savepath: str
@@ -123,8 +129,12 @@ class Plots:
             labels = data.y
             all_labels.extend(labels.to(device))
 
+        # check binary input
+        if binary == False or binary == "proba":
+            raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
+
         # get prediction labels
-        predictions = model.predict(model=model, test_loader=test_loader, device=device)
+        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary)
 
         # convert to np.array
         y_true = np.array(all_labels)
@@ -161,7 +171,8 @@ class Plots:
 
     def classification_report(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
                               class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                              title: str = None, device: str = "auto", savepath: str = None):
+                              title: str = None, binary: Union[bool, float, str] = True, device: str = "auto",
+                              savepath: str = None):
         """
         Generate a classification report for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -177,6 +188,8 @@ class Plots:
             Set the figure size.
         :param title: str
             Set the title of the figure. If None given, the default title will be used.
+        :param binary: Union[bool, float, str]
+            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
         :param device: str
             Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param savepath: str
@@ -201,8 +214,12 @@ class Plots:
             labels = data.y
             all_labels.extend(labels.to(device))
 
+        # check binary input
+        if binary == False or binary == "proba":
+            raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
+
         # get prediction labels
-        predictions = model.predict(model=model, test_loader=test_loader, device=device)
+        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary)
 
         # convert to np.array
         y_true = np.array(all_labels)
@@ -233,3 +250,34 @@ class Plots:
             plt.show()
 
         plt.show()
+
+    def plot_model(self, model: nn.Module = None, train_loader: DataLoader = None, savepath: str = None,
+                   figtype: str = "png"):
+        """
+        Generate a plot of the torch model architecture.
+        :param model: nn.Module
+            The torch model to render as image.
+        :param train_loader: DataLoader
+            The dataset used to train the model. Must be of type torch_geometric.data.DataLoader.
+        :param savepath: str
+            Savepath of the figure. Do not include the file extension.
+        :param figtype: str
+            Type of figure to generate. Defaults to "png". The figure type will be appended to the savepath as the file
+            extension.
+        :return:
+        """
+
+        if model is None:
+            model = self.model
+        if train_loader is None:
+            train_loader = self.data
+
+        batch = next(iter(train_loader))
+
+        output = model(batch)
+        dot = make_dot(output, params=dict(model.named_parameters()), show_attrs=True, show_saved=True)
+
+        if savepath:
+            dot.render(savepath, format=figtype)
+
+        return dot
