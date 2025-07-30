@@ -2,8 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINEConv, GraphSAGE, GATConv, global_mean_pool, global_max_pool, \
-    global_add_pool, SAGEConv
+from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
@@ -355,7 +354,7 @@ class Base(nn.Module):
 class GCNNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+                 act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
         """
         Generate graph model for graph convolutional (GCNC) network. The default model will generate two graph layers
         and one mlp layer.
@@ -375,6 +374,8 @@ class GCNNet(Base):
             Indicate a dropout layer after each mlp layer. Defaults to 0 (no dropout).
         :param num_classes: int
             Number of classes for the output layer.
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
          :param add_feats: Optional[Union[np.array, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
             features. If a np.array/list of the additional features are given, the length of the data will be calculated
@@ -385,6 +386,7 @@ class GCNNet(Base):
 
         global graph_hidden_dim
         super().__init__()
+        self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.is_fitted = False
@@ -432,8 +434,9 @@ class GCNNet(Base):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
         # graph layers
+        act_fn = F_ACT[self.act]
         for conv in self.gcn_conv:
-            x = F.relu(conv(x, edge_index))
+            x = act_fn(conv(x, edge_index))
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
@@ -460,7 +463,8 @@ class GCNNet(Base):
 class GINENet(Base):
     def __init__(self, node_dim: int = 142, edge_feat_dim: int = 16, hidden_dim: int = 64, graph_layers: int = 2,
                  mlp_layers: int = 1, reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
-                 num_classes: int = 2, add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+                 num_classes: int = 2, act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None,
+                 pooling: str = "add"):
         """
         Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
         graph layers and one mlp layer.
@@ -482,6 +486,8 @@ class GINENet(Base):
             Indicate a dropout layer after each mlp layer. Defaults to 0 (no dropout).
         :param num_classes: int
             Number of classes for the output layer.
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
         :param add_feats: Optional[Union[np.array, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
             features. If a np.array/list of the additional features are given, the length of the data will be calculated
@@ -492,6 +498,7 @@ class GINENet(Base):
 
         global reduced_graph_dim
         super().__init__()
+        self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.is_fitted = False
@@ -547,8 +554,9 @@ class GINENet(Base):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
         # graph layers
+        act_fn = F_ACT[self.act]
         for conv in self.gine_conv:
-            x = F.relu(conv(x, edge_index, edge_attr))
+            x = act_fn(conv(x, edge_index, edge_attr))
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
