@@ -3,11 +3,40 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
+
+
+def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optional[int] = None):
+    """
+    Summarize the input nn.Module in a tabular format.
+    :param model: nn.Module
+        The input torch model.
+    :param data: Union[DataLoader, list]
+        The data for training the model. Information must be loaded in class 'DataLoader'. If a 'list' is given, it will
+        be internally loaded to the DataLoader.
+    :param batch_size: int
+        Only needed if the input data is of class 'list'.Needed to set the batch_size of the class 'DataLoader'.
+    :return:
+    """
+
+    # check dataset input:
+    if isinstance(data, list):
+        if batch_size is None:
+            raise ValueError("batch_size needed if data is type 'list'!!")
+        data = DataLoader(data, batch_size=batch_size, shuffle=True, worker_init_fn=set_seed(42))
+    if not isinstance(data, DataLoader):
+        raise TypeError("Issue with input data. Must be a list or a DataLoader instance!")
+
+    # get data elements from iterable
+    data_input = next(iter(data))
+
+    # return tabular string
+    return sum(model=model, data=data_input)
 
 
 class MolToGraph:
