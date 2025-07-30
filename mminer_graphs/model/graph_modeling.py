@@ -352,7 +352,7 @@ class Base(nn.Module):
 
 # Graph Convolutional Neural Network
 class GCNNet(Base):
-    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 128, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
                  act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
         """
@@ -361,7 +361,7 @@ class GCNNet(Base):
         :param node_dim: int
             Length of feature vector per node.
         :param hidden_dim: int
-            Set the size of the hidden layers.
+            Set the dimensions of the hidden layers in the graph network.
         :param graph_layers: int
             Number of graph layers.
         :param mlp_layers: int
@@ -472,8 +472,8 @@ class GINENet(Base):
             Length of node feature vector.
         :param edge_feat_dim: int
             Length of edge feature vector.
-        :param hidden_dim: ing
-            Set the size of the hidden layers.
+        :param hidden_dim: int
+            Set the dimensions of the hidden layers in the graph network.
         :param graph_layers: int
             Number of graph layers.
         :param mlp_layers: int
@@ -581,7 +581,7 @@ class GINENet(Base):
 
 # GraphSAGE
 class GSAGENet(Base):
-    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 128, graph_layers: int = 2, mlp_layers: int = 1,
                  graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
                  act: str = "relu", reduce_graph=False, add_feats: Optional[Union[np.array, list, int]] = None,
                  pooling: str = "mean"):
@@ -591,7 +591,7 @@ class GSAGENet(Base):
         :param node_dim: int
             Length of node feature vector.
         :param hidden_dim: int
-            Set the size of the hidden layers.
+            Set the dimensions of the hidden layers in the graph network.
         :param graph_layers: int
             Number of graph layers.
         :param mlp_layers: int
@@ -699,7 +699,7 @@ class GSAGENet(Base):
 
 # Graph Attention Network
 class GATNet(Base):
-    def __init__(self, node_dim: int = 142, edge_feat_dim: Optional[int] = None, hidden_dim: int = 64, heads: int = 1,
+    def __init__(self, node_dim: int = 142, edge_feat_dim: Optional[int] = None, hidden_dim: int = 128, heads: int = 1,
                  graph_layers: int = 2, mlp_layers: int = 1, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
                  num_classes: int = 2, act: str = "relu", reduce_graph=False,
                  add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
@@ -707,8 +707,10 @@ class GATNet(Base):
 
         :param node_dim: int
             Length of node feature vector.
+        :param edge_feat_dim: Optional[int]
+            Length of edge feature vector.
         :param hidden_dim: int
-            Set the size of the hidden layers.
+            Set the dimensions of the hidden layers in the graph network.
         :param heads: int
             Set the number of attention mechanisms to be used in parallel.
         :param graph_layers: int
@@ -736,6 +738,7 @@ class GATNet(Base):
         super().__init__()
         self.act = act
         self.pooling = pooling
+        self.edge_feat_dim = edge_feat_dim
         self.graph_dropout = graph_dropout
         self.is_fitted = False
 
@@ -784,6 +787,10 @@ class GATNet(Base):
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
+        if self.edge_feat_dim is not None:
+            edge_attr = data.edge_attr
+        else:
+            edge_attr = None
 
         # check activation function
         if self.act not in F_ACT:
@@ -793,7 +800,7 @@ class GATNet(Base):
         # graph layers
         act_fn = F_ACT[self.act]
         for conv in self.gat_conv:
-            x = act_fn(conv(x, edge_index))
+            x = act_fn(conv(x, edge_index, edge_attr))
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
