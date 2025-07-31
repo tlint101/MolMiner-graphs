@@ -132,6 +132,17 @@ def get_device(device_type="auto"):
     return device
 
 
+# run to see what is available on machine
+def check_gpu():
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        print(f"CUDA is available. Device: {device_name}")
+    elif torch.backends.mps.is_available():
+        print("MPS (Metal Performance Shaders) is available. Device: Apple GPU")
+    else:
+        print("Only CPU is available. Check CUDA configurations!")
+
+
 # set seed for pytorch, numpy and python
 def set_seed(seed: int = 42, deterministic: bool = True) -> None:
     torch.manual_seed(seed)
