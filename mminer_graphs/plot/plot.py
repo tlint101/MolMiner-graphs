@@ -8,7 +8,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 from typing import Optional, Union
 from torchviz import make_dot
 from torch_geometric.data import DataLoader
-from mminer_graphs.model.model_utils import set_seed
+from mminer_graphs.model.model_utils import set_seed, get_device
 
 
 class Plots:
@@ -117,7 +117,7 @@ class Plots:
 
         if model is None:
             model = self.model
-        if model.is_fitted == False:
+        if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
         if test_loader is None:
             test_loader = self.data
@@ -127,18 +127,28 @@ class Plots:
         # get labels
         for data in test_loader:
             labels = data.y
-            all_labels.extend(labels.to(device))
+            all_labels.extend(labels.to('cpu'))  # move tensors to cpu
 
         # check binary input
         if binary == False or binary == "proba":
             raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
 
         # get prediction labels
-        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary)
+        if device == "cuda" or device == "gpu":
+            return_type = "tensor"
+        else:
+            return_type = "list"
+        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary,
+                                    return_type=return_type)
 
-        # convert to np.array
-        y_true = np.array(all_labels)
-        y_pred = np.array(predictions)
+        if device == "cuda" or device == "gpu":
+            # move tensors to cpu
+            y_true = np.array(all_labels)
+            y_pred = predictions.detach().cpu().numpy()
+        else:
+            # convert to np.array
+            y_true = np.array(all_labels)
+            y_pred = np.array(predictions)
 
         # calculate matrix
         cm_matrix = confusion_matrix(y_true, y_pred)
@@ -198,7 +208,7 @@ class Plots:
         """
         if model is None:
             model = self.model
-        if model.is_fitted == False:
+        if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
         if test_loader is None:
             test_loader = self.data
@@ -212,18 +222,28 @@ class Plots:
         # get labels
         for data in test_loader:
             labels = data.y
-            all_labels.extend(labels.to(device))
+            all_labels.extend(labels.to("cpu"))  # move tensors to cpu
 
         # check binary input
         if binary == False or binary == "proba":
             raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
 
         # get prediction labels
-        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary)
+        if device == "cuda" or device == "gpu":
+            return_type = "tensor"
+        else:
+            return_type = "list"
+        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary,
+                                    return_type=return_type)
 
-        # convert to np.array
-        y_true = np.array(all_labels)
-        y_pred = np.array(predictions)
+        if device == "cuda" or device == "gpu":
+            # move tensors to cpu
+            y_true = np.array(all_labels)
+            y_pred = predictions.detach().cpu().numpy()
+        else:
+            # convert to np.array
+            y_true = np.array(all_labels)
+            y_pred = np.array(predictions)
 
         # calculate classification report
         report_dict = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
