@@ -242,8 +242,9 @@ class Base(nn.Module):
             print(f"Average Training Accuracy: {round(np.mean(self.train_accuracy), 3)}")
             print(f"Average Test Accuracy: {round(np.mean(self.test_accuracy), 3)}")
 
-        # return instance
-        return self
+        # # Optional, this will print the model and its layers
+        # # return instance
+        # return self
 
     @staticmethod
     def predict(model: nn.Module, test_loader: Union[np.array, list, DataLoader], device: str = "auto",
