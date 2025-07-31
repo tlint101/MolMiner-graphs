@@ -12,9 +12,18 @@ from mminer_graphs.model.model_utils import set_seed, get_device
 
 
 class Plots:
-    def __init__(self, model: Optional[torch.nn] = None, data_loader: Optional[DataLoader] = None):
+    def __init__(self, model: Optional[torch.nn] = None, data_loader: Optional[DataLoader] = None,
+                 device: str = "auto"):
+        """
+        Instantiate Plots class.
+        :param model: Optional[torch.nn]
+        :param data_loader: Optional[DataLoader]
+        :param device: str
+            Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
+        """
         self.model = model
         self.data = data_loader
+        self.device = device
 
     def curves(self, model: Optional[torch.nn] = None, metrics: list = ["accuracy", "loss"],
                line_color: tuple = ("#1f77b4", "#ff7f0e"), legend_loc: str = "best", figsize: tuple = (14, 5),
@@ -29,7 +38,7 @@ class Plots:
         :param line_color: tuple
             A tuple containing the line colors.
         :param legend_loc: str
-            Set the locaiton of the figure legends.
+            Set the location of the figure legends.
         :param figsize: tuple
             Set the figure size.
         :param title: str
@@ -89,8 +98,7 @@ class Plots:
 
     def confusion_matrix(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
                          class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                         title: str = None, binary: Union[bool, float, str] = True, device: str = "auto",
-                         savepath: str = None):
+                         title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
         """
         Generate a confusion matrix for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -108,8 +116,6 @@ class Plots:
             Set the title of the figure. If None given, the default title will be used.
         :param binary: Union[bool, float, str]
             Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
-        :param device: str
-            Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param savepath: str
             Set the figure savepath.
         :return:
@@ -134,14 +140,14 @@ class Plots:
             raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
 
         # get prediction labels
-        if device == "cuda" or device == "gpu":
+        if self.device == "cuda" or self.device == "gpu":
             return_type = "tensor"
         else:
             return_type = "list"
-        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary,
+        predictions = model.predict(model=model, test_loader=test_loader, device=self.device, binary=binary,
                                     return_type=return_type)
 
-        if device == "cuda" or device == "gpu":
+        if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu
             y_true = np.array(all_labels)
             y_pred = predictions.detach().cpu().numpy()
@@ -181,8 +187,7 @@ class Plots:
 
     def classification_report(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
                               class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                              title: str = None, binary: Union[bool, float, str] = True, device: str = "auto",
-                              savepath: str = None):
+                              title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
         """
         Generate a classification report for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -200,8 +205,6 @@ class Plots:
             Set the title of the figure. If None given, the default title will be used.
         :param binary: Union[bool, float, str]
             Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
-        :param device: str
-            Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param savepath: str
             Set the figure savepath.
         :return:
@@ -229,14 +232,14 @@ class Plots:
             raise ValueError("Confusion Matrix can only accept 'True', 'multi', or a float!")
 
         # get prediction labels
-        if device == "cuda" or device == "gpu":
+        if self.device == "cuda" or self.device == "gpu":
             return_type = "tensor"
         else:
             return_type = "list"
-        predictions = model.predict(model=model, test_loader=test_loader, device=device, binary=binary,
+        predictions = model.predict(model=model, test_loader=test_loader, device=self.device, binary=binary,
                                     return_type=return_type)
 
-        if device == "cuda" or device == "gpu":
+        if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu
             y_true = np.array(all_labels)
             y_pred = predictions.detach().cpu().numpy()
