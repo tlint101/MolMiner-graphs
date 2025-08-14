@@ -14,9 +14,20 @@ __all__ = ["MolGraph", "AtomGraph", "GLOBAL_VALUES"]
 # print global definition
 def GLOBAL_VALUES():
     # atom features
-    print('ATOM Features:', ATOM_NUM)
+    # print('ATOM Features:', ATOM_NUM) #todo add additional charges into list
+    print('ATOM Features: 142')
     for (x, item) in enumerate(ATOMS):
-        print(f"{x}: {item}")
+        print(f"  {x}: {item}")
+    # degree
+    print(f"  Atom Degree: 11")
+    print(f"  Atom Valence: 7")
+    print(f"  Formal charge: 5")
+    print(f"  Hybridization: 6")
+    print(f"  Aromaticity: 1")
+    print(f"  Number of Hydrogens: 5")
+    print(f"  Chirality: 5")
+    print(f"  Ring status: 1")
+    print(f"  Mass: 1")
 
     # bond features
     print('BOND Features:', BOND_NUM)
