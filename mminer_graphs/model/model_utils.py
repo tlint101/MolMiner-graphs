@@ -77,7 +77,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
         raise TypeError(
             "Only 'AtomGraph', 'PharmacophoreGraph', 'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph' are supported!!")
 
-    node = torch.tensor(graph.node_features, dtype=torch.float)
+    node = torch.tensor(np.array(graph.node_features), dtype=torch.float)
     # convert node features into a vector for GNN
     if node.ndim == 1:
         node = node.unsqueeze(1)
@@ -88,7 +88,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
 
     # bond features
     bond = graph.edge_features
-    bond = torch.tensor(bond, dtype=torch.float).contiguous()
+    bond = torch.tensor(np.array(graph.edge_features), dtype=torch.float).contiguous()
 
     # append smi string
     smiles = graph.smi
