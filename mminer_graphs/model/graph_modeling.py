@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,7 +8,7 @@ from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
-from typing import Optional, Union
+from typing import Optional, Union, Type
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
 
 
@@ -348,17 +349,68 @@ class Base(nn.Module):
         return "Model saved!"
 
     @staticmethod
-    def load(model: nn.Module, filepath: str):
+    def load(model: Type[nn.Module], param_path: str, model_path: str, add_feats: Optional[np.ndarray] = None,
+             node_dim: int = 142, edge_feat_dim: int = 16, num_classes: int = 2, criterion: str = "cross_entropy",
+             device: str = "auto"):
         """
         Load a torch model from a .pth file.
-        :param model: nn.Module
-            Instantiate the model class to load the saved parameter tensors into.
-        :param filepath: str
+        :param model: Type(nn.Module)
+            Model class to load the saved parameter tensors onto.
+        :param param_path: str
+            Path to model parameters in json format.
+        :param model_path: str
             The filepath for the saved torch model. Must be in .pth format.
+        :param add_feats: np.ndarray
+            A list of additional features to add to the graph latent space. Information needed to be given to set the
+            correct number of nodes.
+        :param node_dim: int
+            Set the node dimension for the graph. Will default to 142.
+        :param edge_feat_dim: int
+            Set the dimensions of the edge features/attributes. Will default to 16.
+        :param num_classes: int
+            Set the number of classes for the model. Will default to 2..
+        :param criterion: str
+            Set the model loss function.
+        :param device: str
+            Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :return:
         """
-        model.load_state_dict(torch.load(filepath))
-        return "Model loaded!"
+        # load params
+        with open(param_path, 'r') as f:
+            params = json.load(f)
+
+        # additional params not found optimization
+        params['node_dim'] = node_dim
+        params['edge_feat_dim'] = edge_feat_dim
+        params['num_classes'] = num_classes
+        params['add_feats'] = add_feats
+        params['criterion'] = criterion
+        params['device'] = device
+
+        # separate params for model and fitting
+        if model == GCNNet:
+            for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout", "mlp_dropout",
+                                "add_feats"]
+        elif model == GINENet:
+            for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers", "mlp_dropout",
+                                "add_feats"]
+        else:
+            raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
+        model_params = {param_key: params[param_key] for param_key in for_model_params}
+
+        # todo for future include add_feats for loading
+        # if add_feats is not None:
+        #     model_params['add_feats'] = add_feats
+        # fit_params = {param_key: params[param_key] for param_key in for_fit_params}
+
+        # build model
+        build_model = model(**model_params)
+
+        # load saved model
+        build_model.load_state_dict(torch.load(model_path))
+        print("Model loaded!")
+
+        return build_model
 
     def _build_mlp(self, input_dim, mlp_layers, num_classes, dropout):
         """Dynamically build mlp layer. Method shared between graph neural networks."""
