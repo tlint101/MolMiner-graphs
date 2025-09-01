@@ -186,9 +186,6 @@ class Base(nn.Module):
         if isinstance(test_loader, list):
             test_loader = DataLoader(test_loader, batch_size=batch_size)
 
-        if not isinstance(train_loader, DataLoader) or not isinstance(test_loader, DataLoader):
-            raise TypeError("Issue with the train_loader and hte test_loader. Must be a list or a DataLoader instance!")
-
         if device_warn:
             print(f"Model and Tensor running on {fit_device}")
 
@@ -375,11 +372,11 @@ class Base(nn.Module):
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :return:
         """
-        # load params
+        # load params from json file
         with open(param_path, 'r') as f:
             params = json.load(f)
 
-        # additional params not found optimization
+        # additional params not found in json file
         params['node_dim'] = node_dim
         params['edge_feat_dim'] = edge_feat_dim
         params['num_classes'] = num_classes
@@ -387,7 +384,7 @@ class Base(nn.Module):
         params['criterion'] = criterion
         params['device'] = device
 
-        # separate params for model and fitting
+        # load params by model
         if model == GCNNet:
             for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout", "mlp_dropout",
                                 "add_feats"]
