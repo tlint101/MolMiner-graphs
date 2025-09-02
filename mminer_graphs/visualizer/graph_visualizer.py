@@ -51,8 +51,8 @@ class Graph(MolGraph):
         return mol
 
     # Final display function: one matplotlib figure, side-by-side
-    def display_graph(self, moleculegraph: MolGraph, colors: Union[str, list] = None, reference: bool = True,
-                      graph_labels: bool = True, titles: list = None, titlesize: int = 15, labelsize: int = 10,
+    def display_graph(self, moleculegraph: MolGraph, colors: Union[str, list] = None, ref: bool = True,
+                      graph_labels: bool = True, title: Union[str, list] = "default", titlesize: int = 15, labelsize: int = 10,
                       figsize: tuple = (10, 4), savefig: str = None):
         """
         Draw a query molecule and its associated graph. The graph is made using AtomGraph or PharmacophoreGraph.
@@ -60,12 +60,12 @@ class Graph(MolGraph):
             Graph information generated from AtomGraph or PharmacophoreGraph.
         :param colors: Union[str,list]
             Input color conditions for the molecule graph.
-        :param reference: bool
+        :param ref: bool
             Indicate drawing for the reference molecule.
         :param graph_labels: bool
             Set the atom labels for the graph.
-        :param titles: list
-            Input title names for the molecule and graph type.
+        :param title: Union[str, list]
+            Input title names for the molecule and graph type. If set to default, will plot 'Molecule' and GraphType.
         :param titlesize: int
             Set the size of the graph titles
         :param labelsize: int
@@ -106,18 +106,19 @@ class Graph(MolGraph):
         node_colors = [colors[i] for i in G.nodes]
 
         # get plot titles
-        if titles is None:
+        if title == 'default':
             graph_type = _display_title_for_object(moleculegraph)
-            titles = ['Molecule', graph_type]
+            title = ['Molecule', graph_type]
 
-        if reference is True:
+        if ref is True:
             # place figures side by side
             fig, axs = plt.subplots(1, 2, figsize=figsize)
 
             # left - RDKit image
             axs[0].imshow(mol_img)
             axs[0].axis("off")
-            axs[0].set_title(titles[0], fontsize=titlesize)
+            if title:
+                axs[0].set_title(title[0], fontsize=titlesize)
 
             # right - NetworkX graph
             nx.draw(
@@ -130,11 +131,12 @@ class Graph(MolGraph):
             axs[1].axis("off")
             axs[1].set_aspect('equal', adjustable='datalim')  # graph scaling
             axs[1].autoscale_view()  # graph scaling
-            axs[1].set_title(titles[1], fontsize=titlesize)
+            if title:
+                axs[1].set_title(title[1], fontsize=titlesize)
 
             plt.tight_layout()
             plt.show()
-        elif reference is False:
+        elif ref is False:
             fig, ax = plt.subplots(figsize=figsize)
             # right - NetworkX graph
             nx.draw(
@@ -147,7 +149,8 @@ class Graph(MolGraph):
             ax.axis("off")
             ax.set_aspect('equal', adjustable='datalim')  # graph scaling
             ax.autoscale_view()  # graph scaling
-            ax.set_title(titles[1], fontsize=titlesize)
+            if title:
+                ax.set_title(title[1], fontsize=titlesize)
 
             plt.tight_layout()
             plt.show()
