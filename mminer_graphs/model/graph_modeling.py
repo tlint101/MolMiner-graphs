@@ -168,10 +168,11 @@ class Base(nn.Module):
         # set optimizer and criterion
         if optimizer in OPTIMIZERS.keys():
             optimizer = OPTIMIZERS[optimizer](model.parameters(), lr=lr, weight_decay=wt_decay)
-        elif criterion is None:
+        elif optimizer is None:
             raise ValueError("No optimizer defined!")
         else:
-            raise ValueError("Optimizer not recognized!")
+            raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
+
         if criterion in CRITERIONS.keys():
             criterion = CRITERIONS[criterion](**kwargs)
         elif criterion is None:
