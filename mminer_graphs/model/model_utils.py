@@ -109,7 +109,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
 
 
 # support function to determine if gpu, mps, or cpu will be used for torch models
-def get_device(device_type="auto"):
+def get_torch_device(device_type="auto"):
     if device_type == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")

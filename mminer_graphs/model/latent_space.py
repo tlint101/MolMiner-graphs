@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.graph_modeling import EarlyStopping
-from mminer_graphs.model.model_utils import set_seed, get_device, OPTIMIZERS, CRITERIONS, F_ACT
+from mminer_graphs.model.model_utils import set_seed, get_torch_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union, Type
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
@@ -58,7 +58,7 @@ class Base(nn.Module):
         """
 
         # check if on the same device
-        fit_device = get_device(device)
+        fit_device = get_torch_device(device)
         self.to(fit_device)
 
         # set optimizer and criterion
@@ -149,7 +149,7 @@ class Base(nn.Module):
         :return:
         """
         # check if on the same device
-        fit_device = get_device(device)
+        fit_device = get_torch_device(device)
 
         # check dataset input:
         if isinstance(train_loader, list):
@@ -195,7 +195,7 @@ class Base(nn.Module):
         :return:
         """
         # check if on the same device
-        fit_device = get_device(device)
+        fit_device = get_torch_device(device)
 
         # evaluation mode
         self.eval()

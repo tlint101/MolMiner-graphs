@@ -8,7 +8,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 from typing import Optional, Union
 from torchviz import make_dot
 from torch_geometric.data import DataLoader
-from mminer_graphs.model.model_utils import set_seed, get_device
+from mminer_graphs.model.model_utils import set_seed, get_torch_device
 
 
 class Plots:
