@@ -1,9 +1,10 @@
-import numpy as np
 import random
-from typing import Optional, Union
 import torch
-from torch_geometric.data import Data
+import numpy as np
+import mlx.core as mx
+from typing import Optional, Union
 import torch.nn.functional as F
+from torch_geometric.data import Data
 from mminer_graphs.graph import AtomGraph, PharmacophoreGraph, FunctionalGraph, JunctionTreeGraph, ClusterGraph
 
 graph_type_dict = {
@@ -128,7 +129,25 @@ def get_torch_device(device_type="auto"):
     else:
         raise ValueError(
             f"Trying to run device on {device_type}. Only 'auto', 'cuda', 'gpu'(cuda), 'mps' or 'cpu' are supported!!")
+    return device
 
+
+# support function to get apple silicon gpu, cpu, or cuda
+def get_mlx_device(device_type="auto"):
+    if device_type == "auto":
+        device = mx.gpu
+    elif device_type == "gpu":
+        device = mx.gpu
+    elif device_type == "cpu":
+        device = mx.cpu
+    elif device_type == "cuda":  # todo test on cuda enabled machine
+        if not mx.cuda.is_available():
+            raise ValueError("CUDA not available!")
+        else:
+            device = mx.cuda
+    else:
+        raise ValueError(
+            f"Trying to run device on {device_type}. Only 'auto', 'cuda', 'gpu'(cuda), 'mps' or 'cpu' are supported!!")
     return device
 
 
