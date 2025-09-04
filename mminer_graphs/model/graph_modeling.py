@@ -8,10 +8,16 @@ from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_torch_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
-import mlx.core as mx
-from mlx_graphs.data import GraphData
 from typing import Optional, Union, Type
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
+
+# optional import based on workstation
+try:
+    import mlx.core as mx
+    from mlx_graphs.data import GraphData
+except ImportError:
+    mx = None
+    GraphData = None
 
 
 def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optional[int] = None):
