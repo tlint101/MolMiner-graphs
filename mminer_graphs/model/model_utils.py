@@ -60,41 +60,42 @@ F_ACT = {
     "tanh": F.tanh,
 }
 
-MLX_OPTI = {
-    "adam": optim.Adam,
-    "adamw": optim.AdamW,
-    "sgd": optim.SGD,
-    "rmsprop": optim.RMSprop,
-    "adagrad": optim.Adagrad,
-    "adadelta": optim.AdaDelta,
-    "adamax": optim.Adamax,
-}
+if optim is not None:
+    MLX_OPTI = {
+        "adam": optim.Adam,
+        "adamw": optim.AdamW,
+        "sgd": optim.SGD,
+        "rmsprop": optim.RMSprop,
+        "adagrad": optim.Adagrad,
+        "adadelta": optim.AdaDelta,
+        "adamax": optim.Adamax,
+    }
 
-MLX_ACT = {
-    "relu": mlx_nn.relu,
-    "leaky_relu": lambda x: mlx_nn.leaky_relu(x, negative_slope=0.01),
-    "gelu": mlx_nn.gelu,
-    "elu": mlx_nn.elu,
-    "silu": mlx_nn.silu,  # Also known as Swish
-    "tanh": mlx_nn.tanh,
-}
+    MLX_ACT = {
+        "relu": mlx_nn.relu,
+        "leaky_relu": lambda x: mlx_nn.leaky_relu(x, negative_slope=0.01),
+        "gelu": mlx_nn.gelu,
+        "elu": mlx_nn.elu,
+        "silu": mlx_nn.silu,  # Also known as Swish
+        "tanh": mlx_nn.tanh,
+    }
 
-MLX_CRITERIONS = {
-    # Classification
-    "cross_entropy": mlx_nn.losses.cross_entropy,
-    "nll": mlx_nn.losses.nll_loss,
-    "kl_divergence": mlx_nn.losses.kl_div_loss,
-    # "bce_with_logits": mlx_nn.losses.BCEWithLogitsLoss,
-    # "poisson": mlx_nn.PoissonNLLLoss,
-    # Regression
-    "mse": mlx_nn.losses.mse_loss,
-    "l1": mlx_nn.losses.l1_loss,
-    "smooth_l1": mlx_nn.losses.smooth_l1_loss,
-    "huber": mlx_nn.losses.huber_loss,
-    # Others
-    "cosine_similarity": mlx_nn.losses.cosine_similarity_loss,
-    "triplet_margin": mlx_nn.losses.triplet_loss,
-}
+    MLX_CRITERIONS = {
+        # Classification
+        "cross_entropy": mlx_nn.losses.cross_entropy,
+        "nll": mlx_nn.losses.nll_loss,
+        "kl_divergence": mlx_nn.losses.kl_div_loss,
+        # "bce_with_logits": mlx_nn.losses.BCEWithLogitsLoss,
+        # "poisson": mlx_nn.PoissonNLLLoss,
+        # Regression
+        "mse": mlx_nn.losses.mse_loss,
+        "l1": mlx_nn.losses.l1_loss,
+        "smooth_l1": mlx_nn.losses.smooth_l1_loss,
+        "huber": mlx_nn.losses.huber_loss,
+        # Others
+        "cosine_similarity": mlx_nn.losses.cosine_similarity_loss,
+        "triplet_margin": mlx_nn.losses.triplet_loss,
+    }
 
 
 def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "AtomGraph", add_smi: bool = False,
