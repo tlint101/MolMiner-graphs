@@ -6,18 +6,10 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
-from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_torch_device, OPTIMIZERS, CRITERIONS, F_ACT
+from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union, Type
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
-
-# optional import based on workstation
-try:
-    import mlx.core as mx
-    from mlx_graphs.data import GraphData
-except ImportError:
-    mx = None
-    GraphData = None
 
 
 def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optional[int] = None):
@@ -50,7 +42,7 @@ def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optiona
 
 class MolToGraph:
     def __init__(self, smi: str, label: Optional[Union[int, float]] = None, graph_type: str = "AtomGraph",
-                 add_smi: bool = False, add_feats=None, with_atom_index: bool = False, gtype: str = "torch"):
+                 add_smi: bool = False, add_feats=None, with_atom_index: bool = False):
         """
         Generate molecular graphs for use in the graph neural networks. The script pulls information from the .graph
         module with additional params to include information on tensors where needed.
@@ -68,18 +60,9 @@ class MolToGraph:
             list.
         :param with_atom_index: bool
             To include the smi string with atom index. Defaults to False.
-        :param gtype: str
-            Set the data type. Can be 'torch' or 'mlx'. Defaults to 'torch'.
         """
-        if gtype == "torch":
-            self.graph_data = mol_to_graph(smi=smi, label=label, graph_type=graph_type, add_smi=add_smi,
-                                           add_feats=add_feats, with_atom_index=with_atom_index)
-        elif gtype == "mlx":
-            graph = mol_to_graph(smi=smi, label=label, graph_type=graph_type, add_smi=add_smi,
-                                 add_feats=add_feats, with_atom_index=with_atom_index)
-            self.graph_data = _torch_to_mlx(graph)
-        else:
-            raise ValueError(f"Unknown graph type: {graph_type}! Only 'torch' or 'mlx' are accepted!")
+        self.graph_data = mol_to_graph(smi=smi, label=label, graph_type=graph_type, add_smi=add_smi,
+                                       add_feats=add_feats, with_atom_index=with_atom_index)
 
 
 # early_stopping.py
@@ -179,7 +162,7 @@ class Base(nn.Module):
         """
 
         # check if on the same device
-        fit_device = get_torch_device(device)
+        fit_device = get_device(device)
         self.to(fit_device)
 
         # set optimizer and criterion
@@ -283,7 +266,7 @@ class Base(nn.Module):
         :return:
         """
         # check if on the same device
-        fit_device = get_torch_device(device)
+        fit_device = get_device(device)
         print(f"Prediction running on {fit_device}")
 
         # evaluation mode
@@ -1035,13 +1018,6 @@ def _global_pooling(x, batch, pool_type='add'):
         return global_max_pool(x, batch)
     else:
         raise ValueError(f"Unknown pool_type: {pool_type}")
-
-
-# support function to handle all info in a PyG graph
-def _torch_to_mlx(graph):
-    attr_names = graph.keys()
-    data_dict = {attr: mx.array(getattr(graph, attr)) for attr in attr_names}
-    return GraphData(**data_dict)
 
 
 if __name__ == "__main__":
