@@ -3,18 +3,24 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import TensorDataset
+from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
+from torchinfo import summary as torchinfo_summary
+from torch_geometric.data import Data
 from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union, Type
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
 
 
-def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optional[int] = None):
+def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, batch_size: Optional[int] = None,
+            input_size: Optional[tuple] = None, **kwargs):
     """
-    Summarize the input nn.Module in a tabular format.
+    Summarize the input nn.Module in a tabular format. If using graph models, input_size is not needed. If using MLP,
+    then input_size is needed, but data is not needed.
     :param model: nn.Module
         The input torch model.
     :param data: Union[DataLoader, list]
@@ -22,22 +28,32 @@ def summary(model: nn.Module, data: Union[DataLoader, list], batch_size: Optiona
         be internally loaded to the DataLoader.
     :param batch_size: int
         Only needed if the input data is of class 'list'.Needed to set the batch_size of the class 'DataLoader'.
+    :param input_size: tuple
+        Shape of input of tabular data.
+    :param kwargs: dict
+        Additional arguments passed to torchinfo.
     :return:
     """
 
-    # check dataset input:
-    if isinstance(data, list):
-        if batch_size is None:
-            raise ValueError("batch_size needed if data is type 'list'!!")
-        data = DataLoader(data, batch_size=batch_size, shuffle=True, worker_init_fn=set_seed(42))
-    if not isinstance(data, DataLoader):
-        raise TypeError("Issue with input data. Must be a list or a DataLoader instance!")
+    # for MLP model
+    if input_size is not None:
+        return torchinfo_summary(model, input_size=input_size, batch_size=batch_size, **kwargs)
+    else:
+        # for graph models
+        # check dataset input:
+        if isinstance(data, list):
+            if batch_size is None:
+                raise ValueError("batch_size needed if data is type 'list'!!")
+            data = DataLoader(data, batch_size=batch_size, shuffle=True, worker_init_fn=set_seed(42))
+        if not isinstance(data, DataLoader):
+            raise TypeError("Issue with input data. Must be a list or a DataLoader instance!")
 
-    # get data elements from iterable
-    data_input = next(iter(data))
+        # get data elements from iterable
+        data_input = next(iter(data))
 
-    # return tabular string
-    return sum(model=model, data=data_input)
+        # return tabular string
+        return sum(model=model, data=data_input)
+
 
 
 class MolToGraph:
@@ -118,15 +134,12 @@ class Base(nn.Module):
         super().__init__()
         self.is_fitted = None
 
-    def fit(self, model, train_loader: Union[DataLoader, list], test_loader: Union[DataLoader, list], epochs: int = 10,
+    def fit(self, train_loader: Union[DataLoader, list], test_loader: Union[DataLoader, list], epochs: int = 10,
             optimizer: str = "adam", criterion: str = "cross_entropy", lr: float = 0.01, wt_decay: float = 0.0,
-            batch_size: int = 1024, device="auto", estop: Optional[Union[EarlyStopping, int]] = None, pbar=True,
-            verbose: bool = False, device_warn: bool = True,
-            **kwargs):
+            batch_size: int = 1024, device: str = "auto", estop: Optional[Union[EarlyStopping, int]] = None,
+            pbar: bool = True, verbose: bool = False, device_warn: bool = True, **kwargs):
         """
         Fit the model.
-        :param model: torch.nn.Module
-            The torch model to fit.
         :param train_loader: Union[torch_geometric.loader.DataLoader, list]
             The data loader for the training data.
         :param test_loader: torch_geometric.loader.DataLoader
@@ -150,16 +163,18 @@ class Base(nn.Module):
             Trigger EarlyStopping during model fitting. Can manually call the estop criteria, or call an int to
             designate the patience number. If an int is given, the early stopping will be triggered based on the
             smallest test loss for each epoch.
-        :param pbar:
+        :param pbar: bool
             Whether to show a progress bar during model fit for each epoch.
         :param verbose: bool
             Determine whether to output train/test accuracy and loss for each epoch.
-        :param device_warn:
-            Option to print which tensor/model is on 'cpu', 'cuda' or 'mps'.
+        :param device_warn: bool
+            Option to print which tensor/model is on 'cpu', 'cuda', or 'mps'.
         :param kwargs: dict
             kwargs for a given criterion.
         :return:
         """
+        # set model to current instance
+        model = self
 
         # check if on the same device
         fit_device = get_device(device)
@@ -245,14 +260,13 @@ class Base(nn.Module):
         # # return instance
         # return self
 
-    @staticmethod
-    def predict(model: nn.Module, test_loader: Union[np.array, list, DataLoader], device: str = "auto",
+    def predict(self, data: Union[np.array, list, DataLoader], device: str = "auto",
                 binary: Union[bool, float, str] = True, return_type: str = "list"):
         """
         Handle predictions for an input torch Dataloader.
         :param model: torch.nn.Module
             A trained torch model.
-        :param test_loader: Union[np.array, list, DataLoader]
+        :param data: Union[np.array, list, DataLoader]
             Data for prediction. Must be converted into a graph and organized in an array or list.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
@@ -265,6 +279,9 @@ class Base(nn.Module):
             Set the return type of the prediction. Can be "tensor" or "list".
         :return:
         """
+        # set model to current instance
+        model = self
+
         # check if on the same device
         fit_device = get_device(device)
         print(f"Prediction running on {fit_device}")
@@ -273,8 +290,8 @@ class Base(nn.Module):
         model.eval()
         all_preds = []
         with torch.no_grad():  # disable gradient calculation
-            for data in test_loader:
-                datapoint = data.to(fit_device)
+            for x in data:
+                datapoint = x.to(fit_device)
                 output = model(datapoint)
                 # set for binary, multi-class, or probability output
                 if binary == True or isinstance(binary, float):
@@ -333,27 +350,21 @@ class Base(nn.Module):
         if hasattr(self.final_mlp, 'reset_parameters'):
             self.final_mlp.reset_parameters()
 
-    @staticmethod
-    def save(model: nn.Module, filepath: str):
+    def save(self, filepath: str):
         """
         Save a fitted torch model.
-        :param model: nn.Module
-            A trained torch model.
         :param filepath: str
             The filepath for the saved torch model. Must be in .pth format.
         :return:
         """
-        torch.save(model.state_dict(), filepath)
+        torch.save(self.state_dict(), filepath)
         return "Model saved!"
 
-    @staticmethod
-    def load(model: Type[nn.Module], param_path: str, model_path: str, add_feats: Optional[np.ndarray] = None,
+    def load(self, model_path: str = None, param_path: Optional[str] = None, add_feats: Optional[np.ndarray] = None,
              node_dim: int = 142, edge_feat_dim: int = 16, num_classes: int = 2, criterion: str = "cross_entropy",
              device: str = "auto"):
         """
         Load a torch model from a .pth file.
-        :param model: Type(nn.Module)
-            Model class to load the saved parameter tensors onto.
         :param param_path: str
             Path to model parameters in json format.
         :param model_path: str
@@ -373,42 +384,51 @@ class Base(nn.Module):
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :return:
         """
-        # load params from json file
-        with open(param_path, 'r') as f:
-            params = json.load(f)
+        model = self
 
-        # additional params not found in json file
-        params['node_dim'] = node_dim
-        params['edge_feat_dim'] = edge_feat_dim
-        params['num_classes'] = num_classes
-        params['add_feats'] = add_feats
-        params['criterion'] = criterion
-        params['device'] = device
+        if param_path:
+            # load params from json file
+            with open(param_path, 'r') as f:
+                params = json.load(f)
 
-        # load params by model
-        if model == GCNNet:
-            for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout", "mlp_dropout",
-                                "add_feats"]
-        elif model == GINENet:
-            for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers", "mlp_dropout",
-                                "add_feats"]
+            # additional params not found in json file
+            params['node_dim'] = node_dim
+            params['edge_feat_dim'] = edge_feat_dim
+            params['num_classes'] = num_classes
+            params['criterion'] = criterion
+            params['device'] = device
+
+            # load params by model
+            if model.__class__ == GCNNet:
+                for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
+                                    "mlp_dropout",
+                                    "add_feats"]
+            elif model.__class__ == GINENet:
+                for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
+                                    "mlp_dropout",
+                                    "add_feats"]
+            else:
+                raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
+            model_params = {param_key: params[param_key] for param_key in for_model_params}
+
+            # # to check loading of model
+            # print(model_params)
+
+            # build model, an instance of GNN
+            build_model = model.__class__(**model_params)
+
+            # load saved model
+            build_model.load_state_dict(torch.load(model_path))
+            print("Model loaded!")
+
+            return build_model
         else:
-            raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
-        model_params = {param_key: params[param_key] for param_key in for_model_params}
+            model = self
+            # load model and set to eval mode
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model.eval()
 
-        # todo for future include add_feats for loading
-        # if add_feats is not None:
-        #     model_params['add_feats'] = add_feats
-        # fit_params = {param_key: params[param_key] for param_key in for_fit_params}
-
-        # build model
-        build_model = model(**model_params)
-
-        # load saved model
-        build_model.load_state_dict(torch.load(model_path))
-        print("Model loaded!")
-
-        return build_model
+            return model
 
     def _build_mlp(self, input_dim, mlp_layers, num_classes, dropout):
         """Dynamically build mlp layer. Method shared between graph neural networks."""
@@ -912,7 +932,428 @@ class SplineConvNet(nn.Module):
     pass
 
 
-# set train() to GCNConvNet_train
+class MLP_Baseline(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = None
+        self.is_fitted = None
+
+    def fit(self, x_train: Union[list, np.ndarray], y_train: Union[list, np.ndarray], x_test: Union[list, np.ndarray],
+            y_test: Union[list, np.ndarray], epochs: int = 10, optimizer: str = "adam",
+            criterion: str = "cross_entropy", lr: float = 0.01, wt_decay: float = 0.0, batch_size: int = 1024,
+            device: str = "auto", estop: Optional[Union[EarlyStopping, int]] = None, pbar: bool = True,
+            verbose: bool = False, device_warn: bool = True, **kwargs):
+        """
+        Fit the model. The x_train and y_train and x_test and y_test given will be internally converted into a torch
+        tensor before fitting the model.
+        :param x_train: Union[list, np.ndarray]
+            The training dataset features.
+        :param y_train: Union[list, np.ndarray]
+            The training labels.
+        :param x_test: Union[list, np.ndarray]
+            The testing dataset features.
+        :param y_test: Union[list, np.ndarray]
+            The testing labels.
+        :param epochs: int
+             Set the number of training epochs.
+        :param optimizer: str
+            Set the model optimizer.
+        :param criterion: str
+            Set the model loss function.
+        :param lr: float
+            Set hte optimizer learning rate.
+        :param wt_decay: float
+            Reduce the calculation of weights to the loss function.
+        :param batch_size: int
+            Set the batch size during model training. Defaults to 1024.
+        :param device: str
+            Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
+        :param estop: Optional[Union[EarlyStopping, int]
+            Trigger EarlyStopping during model fitting. Can manually call the estop criteria, or call an int to
+            designate the patience number. If an int is given, the early stopping will be triggered based on the
+            smallest test loss for each epoch.
+        :param pbar:
+            Whether to show a progress bar during model fit for each epoch
+        :param verbose: bool
+            Determine whether to output train/test accuracy and loss for each epoch.
+        :param device_warn: bool
+            Option to print which tensor/model is on 'cpu', 'cuda', or 'mps'.
+        :param kwargs: dict
+            kwargs for a given criterion.
+        :return:
+        """
+        # set model
+        model = self.model
+
+        # check if on the same device
+        fit_device = get_device(device)
+        self.to(fit_device)
+
+        # set optimizer and criterion
+        if optimizer in OPTIMIZERS.keys():
+            optimizer = OPTIMIZERS[optimizer](model.parameters(), lr=lr, weight_decay=wt_decay)
+        elif optimizer is None:
+            raise ValueError("No optimizer defined!")
+        else:
+            raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
+
+        if criterion in CRITERIONS.keys():
+            criterion = CRITERIONS[criterion](**kwargs)
+        elif criterion is None:
+            raise ValueError("No Criterion defined!")
+        else:
+            raise ValueError(f"Criterion not recognized! Only {list(CRITERIONS.keys())} allowed!")
+
+        # check dataset input:
+        if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
+            pass  # can convert to tensor
+        elif all(isinstance(x, list) for x in (x_train, x_test, y_train, y_test)):  # convert list to array
+            x_train, x_test, y_train, y_test = (np.array(x_train), np.array(x_test), np.array(y_train),
+                                                np.array(y_test))
+
+        # convert to tensor
+        x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
+        y_train = torch.tensor(y_train, dtype=torch.long, device=fit_device)
+        x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
+        y_test = torch.tensor(y_test, dtype=torch.long, device=fit_device)
+
+        # wrap tensors into a Dataset
+        train_dataset = TensorDataset(x_train, y_train)
+        test_dataset = TensorDataset(x_test, y_test)
+
+        # load data
+        train_loader = TorchDataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                                       worker_init_fn=set_seed(42))  # avoid overfitting to sample order
+        test_loader = TorchDataLoader(test_dataset, batch_size=batch_size)
+
+        if device_warn:
+            print(f"Model and Tensor running on {fit_device}")
+
+        # reset early_stopping if used
+        if estop is not None and isinstance(estop, EarlyStopping):
+            estop.reset()
+        elif estop is not None and isinstance(estop, int):
+            estop = EarlyStopping(monitor='val_loss', patience=estop, mode='min')
+
+        for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
+            # pass MLP class instance (self)
+            train_loss, train_acc, train_prec = train_mlp(self, train_loader, optimizer, criterion, fit_device)
+            test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_mlp(self, test_loader, criterion,
+                                                                                fit_device)
+
+            # add metrics
+            self.train_loss.append(train_loss)
+            self.test_loss.append(test_loss)
+            self.train_accuracy.append(train_acc)
+            self.test_accuracy.append(test_acc)
+            self.train_precision.append(train_prec)
+            self.test_precision.append(test_prec)
+            self.mcc.append(mcc)
+            self.recall.append(recall)
+            self.f1_score.append(f1)
+            self.roc_auc.append(roc_auc)
+
+            if verbose:
+                print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+                      f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+
+            # early stopping
+            if estop is not None:
+                # determine monitoring metric
+                if estop.monitor == "val_loss":
+                    monitor = test_loss
+                elif estop.monitor == "val_acc":
+                    monitor = test_acc
+                else:
+                    raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
+
+                estop(monitor)
+
+                if estop.early_stop:
+                    print(f"Early stopping triggered after {epoch + 1} epochs!")
+                    break
+
+        # var for cross validation
+        self.is_fitted = True
+
+        if device_warn:
+            print(f"Average Training Loss: {round(np.mean(self.train_loss), 3)}")
+            print(f"Average Test Loss: {round(np.mean(self.test_loss), 3)}")
+            print(f"Average Training Accuracy: {round(np.mean(self.train_accuracy), 3)}")
+            print(f"Average Test Accuracy: {round(np.mean(self.test_accuracy), 3)}")
+
+    def predict(self, data: Union[np.ndarray, list], device: str = "auto", binary: Union[bool, float, str] = True,
+                return_type: str = "list"):
+        """
+        Handle predictions for an input torch Dataloader.
+        :param data: Union[np.array, list]
+            Data for prediction. Must be converted into a graph and organized in an array or list.
+        :param device: str
+            Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
+        :param binary: Union[bool, float, str]
+            Set the output for classification models as binary or multi-class. A boolean value will set predictions to
+            be binary or multi-class predictions. If a float is given, then a binary predictions will be given with the
+            input float used as the cutoff for positive (1) labels. Input strings can be "multi" or "proba", where
+            "multi" will output a multi-class labels and "proba" will output a binary probability vector.
+        :param return_type: str
+            Set the return type of the prediction. Can be "tensor" or "list".
+        :return:
+        """
+        # set model
+        model = self
+
+        # check if on the same device
+        fit_device = get_device(device)
+        print(f"Prediction running on {fit_device}")
+
+        # check dataset input:
+        if isinstance(data, np.ndarray):
+            pass
+        elif isinstance(data, list):
+            data = np.array(data)
+
+        if not isinstance(data, torch.Tensor):
+            # convert to tensor
+            data = torch.tensor(data, dtype=torch.float32, device=fit_device)
+        # make sure data is 2D
+        if data.ndim == 1:
+            data = data.unsqueeze(0)  # shape [1, features]
+
+        # evaluation mode
+        model.eval()
+        all_preds = []
+        with torch.no_grad():  # disable gradient calculation
+            output = model(data)
+            # set for binary, multi-class, or probability output
+            if binary == True or isinstance(binary, float):
+                proba = F.softmax(output, dim=1)[:, 1]
+                if isinstance(binary, float):
+                    proba = (proba > binary).long()
+                else:
+                    proba = (proba >= 0.5).long()
+            # multi-class classification
+            elif binary == False or binary == "multi":
+                proba = F.softmax(output, dim=1)
+                proba = torch.argmax(proba, dim=1)
+            # output probabilities
+            elif binary == "proba":
+                proba = F.softmax(output, dim=1)
+            else:
+                raise ValueError("Only 'multi', 'proba', boolean, or float is supported!!")
+            all_preds.append(proba)
+
+            # conditional check to output as list or tensor
+        if return_type == "list":
+            prediction = torch.cat(all_preds)
+            return prediction.tolist()
+        elif return_type == "tensor":
+            return torch.cat(all_preds)
+        else:
+            raise TypeError(f"Type {return_type} not recognized!")
+
+    def save(self, filepath: str):
+        """
+        Save a fitted torch model.
+        :param filepath: str
+            The filepath for the saved torch model. Must be in .pth format.
+        :return:
+        """
+        model = self
+        torch.save(model.state_dict(), filepath)
+        return "Model saved!"
+
+    def load(self, model_path: Optional[str] = None, param_path: Optional[str] = None, device: str = "auto"):
+        """
+        Load saved model state.
+        :param model_path: Optional[str]
+            Path to saved torch model.
+        :param param_path: Optional[str]
+            Set the path for the saved parameters in .json file.
+        :param device: str
+            Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
+        :return:
+        """
+        model = self
+        # load model and set to eval mode
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.eval()
+
+        print("Model loaded!")
+
+
+class MLP(MLP_Baseline):
+    def __init__(self, input_size: int = 1024, hidden_size: int = 64, layers: int = 1, dropout: float = 0.0,
+                 num_classes: int = 2, reduce_size: bool = False, act: str = "relu"):
+        """
+        Generate an MLP model.
+        :param input_size: int
+            The input size of the data.
+        :param hidden_size: int
+            The size of the hidden layers.
+        :param layers: int
+            Set the number of layers for the MLP model.
+        :param dropout: float
+            Set the dropout rate for the MLP model.
+        :param num_classes: int
+            Set the number of classes for the output layer.
+        :param reduce_size: bool
+            If set to true, each subsequent hidden layers will be halved.
+        :param act: str
+            Set teh non-linear activation function. Defaults to "relu".
+        :param pooling:
+        """
+        super().__init__()
+        self.act = act
+        self.dropout = dropout
+        self.is_fitted = False
+
+        # set dimension of mlp layers
+        self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
+
+        # info for plot
+        self.train_loss = []
+        self.test_loss = []
+        self.train_accuracy = []
+        self.test_accuracy = []
+        self.train_precision = []
+        self.test_precision = []
+        self.mcc = []
+        self.recall = []
+        self.f1_score = []
+        self.roc_auc = []
+
+    def forward(self, data, **kwargs):
+        # kwargs needed to 'ignore' inputs when calling summary
+        for layer in self.model:
+            data = layer(data)
+        return data
+
+    @staticmethod
+    def _build_mlp(input_dim, hidden_size, layers, num_classes, dropout, reduce_size):
+        """Dynamically build mlp layer. Method shared between graph neural networks."""
+        dimension = input_dim  # graph latent space
+        # loop mlp layers
+        model_layers = nn.ModuleList()
+
+        for _ in range(layers - 1):
+            # optional, halve hidden size if reduce_size is True
+            if reduce_size:
+                hidden_size = round(dimension / 2)
+            model_layers.append(nn.Sequential(
+                nn.Linear(dimension, hidden_size),
+                nn.BatchNorm1d(hidden_size),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ))
+            dimension = hidden_size
+        # final mlpl layer
+        model_layers.append(nn.Linear(dimension, num_classes))
+
+        return model_layers
+
+
+# train/test for MLP model
+def train_mlp(model, train_loader, optimizer, criterion, device):
+    """Support function for training the torch model"""
+    model.train()
+    total_loss = 0
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
+
+    for data, y in train_loader:
+        data = data.to(device)
+        y = y.to(device)
+        optimizer.zero_grad()
+
+        # forward pass
+        out = model(data)
+
+        # # todo ass if/else to classify regression or classification
+        # # create a dictionary to sort through?
+        # if criterion is a regression:
+        #     targets = targets.view(-1, 1).float()
+        #     loss = criterion(outputs, targets)
+        # elif tast is classification
+        #     loss = criterion(outputs, targets.long())
+
+        loss = criterion(out, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        pred = out.argmax(dim=1)
+        correct += (pred == y).sum().item()
+        total += y.size(0)
+        # all prediction labels
+        all_preds.append(pred)
+        all_labels.append(y)
+
+    # precision values
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+    # true positives
+    tp = ((all_preds == 1) & (all_labels == 1)).sum().item()
+    # false positives
+    fp = ((all_preds == 1) & (all_labels == 0)).sum().item()
+
+    model_loss = total_loss / len(train_loader)
+    train_acc = correct / total
+    train_pcc = tp / (tp + fp + 1e-8)  # to avoid division by 0
+
+    return model_loss, train_acc, train_pcc
+
+
+@torch.no_grad()
+def test_mlp(model, test_loader, criterion, device):
+    """Support function for testing the torch model"""
+    global mcc, recall, f1, roc_auc
+    model.eval()
+    total_loss = 0
+    correct = 0
+    total = 0
+    predictions = []
+    all_labels = []
+
+    for data, y in test_loader:
+        data = data.to(device)
+        y = y.to(device)
+
+        # forward pass
+        out = model(data)
+
+        loss = criterion(out, y)
+        total_loss += loss.item()
+        pred = out.argmax(dim=1)
+        correct += (pred == y).sum().item()
+        total += y.size(0)
+        # all prediction labels
+        predictions.append(pred)
+        all_labels.append(y)
+
+    # precision values
+    predictions = torch.cat(predictions).cpu()
+    all_labels = torch.cat(all_labels).cpu()
+
+    # true positives
+    tp = ((predictions == 1) & (all_labels == 1)).sum().item()
+    # false positives
+    fp = ((predictions == 1) & (all_labels == 0)).sum().item()
+
+    test_loss = total_loss / len(test_loader)
+    test_acc = correct / total
+    test_prec = tp / (tp + fp + 1e-8)  # to avoid division by 0
+
+    # mcc
+    mcc = matthews_corrcoef(all_labels, predictions)
+    recall = recall_score(all_labels, predictions)
+    f1 = f1_score(all_labels, predictions)
+    roc_auc = roc_auc_score(all_labels, predictions)
+
+    return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
+
+
+# train/test for graph models
 def train(model, train_loader, optimizer, criterion, device):
     """Support function for training the torch model"""
     model.train()

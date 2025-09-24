@@ -10,5 +10,4 @@ from .model.crossval import CrossVal
 from .plot import Plots
 
 __all__ = ["AtomGraph", "GLOBAL_VALUES", "PharmacophoreGraph", "FunctionalGraph", "JunctionTreeGraph", "ClusterGraph",
-           "Graph", "MolToGraph", "Base", "GCNNet", "GINENet", "GSAGENet", "GATNet", "EarlyStopping", "CrossVal",
-           "Plots"]
+           "Graph", "MolToGraph", "Plots"]

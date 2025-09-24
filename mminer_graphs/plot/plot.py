@@ -7,23 +7,54 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report
 from typing import Optional, Union
 from torchviz import make_dot
+from torch.utils.data import TensorDataset
+from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.data import DataLoader
 from mminer_graphs.model.model_utils import set_seed, get_device
 
 
 class Plots:
     def __init__(self, model: Optional[torch.nn] = None, data_loader: Optional[DataLoader] = None,
-                 device: str = "auto"):
+                 x_test: Optional[Union[list, np.ndarray]] = None, y_test: Optional[Union[list, np.ndarray]] = None,
+                 batch_size: Optional[int] = None, device: str = "auto"):
         """
-        Instantiate Plots class.
+        Instantiate Plots class. For MLP models only, x_test and y_test are required. Otherwise, data_loader is only
+        needed for graph models.
         :param model: Optional[torch.nn]
         :param data_loader: Optional[DataLoader]
+        :param x_test: Optional[Union[list, np.ndarray]]
+        :param y_test: Optional[Union[list, np.ndarray]]
+        :param batch_size: Optional[int]
         :param device: str
             Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         """
         self.model = model
-        self.data = data_loader
         self.device = device
+
+        # if list or nd.array given for x_test and y_test
+        if x_test and y_test is not None:
+            # check dataset input:
+            if all(isinstance(x, np.ndarray) for x in (x_test, y_test)):
+                pass  # can convert to tensor
+            elif all(isinstance(x, list) for x in (x_test, y_test)):  # convert list to array
+                x_test, y_test = (np.array(x_test), np.array(y_test))
+
+            # convert to tensor
+            x_test = torch.tensor(x_test, dtype=torch.float32, device=device)
+            y_test = torch.tensor(y_test, dtype=torch.long, device=device)
+
+            # wrap tensors into a Dataset
+            test_dataset = TensorDataset(x_test, y_test)
+
+            # load data
+            test_loader = TorchDataLoader(test_dataset, batch_size=batch_size)
+        else:
+            test_loader = None
+
+        if data_loader:
+            self.data = data_loader
+        elif test_loader:
+            self.data = test_loader
 
     def curves(self, model: Optional[torch.nn] = None, metrics: list = ["accuracy", "loss"],
                line_color: tuple = ("#1f77b4", "#ff7f0e"), legend_loc: str = "best", figsize: tuple = (14, 5),
@@ -96,14 +127,14 @@ class Plots:
 
         plt.show()
 
-    def confusion_matrix(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
+    def confusion_matrix(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                          class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
                          title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
         """
         Generate a confusion matrix for binary classification torch models.
         :param model: Optional[torch.nn]
             A trained torch model.
-        :param test_loader: DataLoader
+        :param data: DataLoader
             A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
             model training.
         :param class_names: Optional[list]
@@ -125,15 +156,23 @@ class Plots:
             model = self.model
         if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
-        if test_loader is None:
-            test_loader = self.data
+        if data is None:
+            data = self.data
 
         # get labels from test_loader
         all_labels = []
         # get labels
-        for data in test_loader:
-            labels = data.y
-            all_labels.extend(labels.to('cpu'))  # move tensors to cpu
+        # for graph data
+        try:
+            for datapoint in data:
+                labels = datapoint.y
+                all_labels.extend(labels.to('cpu'))  # move tensors to cpu
+        except AttributeError:
+            # for MLP tabular data
+            for x_batch, y_batch in data:
+                labels = y_batch
+                data = x_batch
+                all_labels.extend(labels.to('cpu'))
 
         # check binary input
         if binary == False or binary == "proba":
@@ -144,8 +183,8 @@ class Plots:
             return_type = "tensor"
         else:
             return_type = "list"
-        predictions = model.predict(model=model, test_loader=test_loader, device=self.device, binary=binary,
-                                    return_type=return_type)
+
+        predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
 
         if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu
@@ -185,14 +224,14 @@ class Plots:
 
         plt.show()
 
-    def classification_report(self, model: Optional[torch.nn] = None, test_loader: Optional[DataLoader] = None,
+    def classification_report(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                               class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
                               title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
         """
         Generate a classification report for binary classification torch models.
         :param model: Optional[torch.nn]
             A trained torch model.
-        :param test_loader: DataLoader
+        :param data: DataLoader
             A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
             model training.
         :param class_names: Optional[list]
@@ -213,8 +252,8 @@ class Plots:
             model = self.model
         if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
-        if test_loader is None:
-            test_loader = self.data
+        if data is None:
+            data = self.data
         if title is None:
             title = "Classification Report"
         if class_names is None:
@@ -223,9 +262,17 @@ class Plots:
         # get labels from test_loader
         all_labels = []
         # get labels
-        for data in test_loader:
-            labels = data.y
-            all_labels.extend(labels.to("cpu"))  # move tensors to cpu
+        # for graph data
+        try:
+            for datapoint in data:
+                labels = datapoint.y
+                all_labels.extend(labels.to('cpu'))  # move tensors to cpu
+        except AttributeError:
+            # for MLP tabular data
+            for x_batch, y_batch in data:
+                labels = y_batch
+                data = x_batch
+                all_labels.extend(labels.to('cpu'))
 
         # check binary input
         if binary == False or binary == "proba":
@@ -236,8 +283,8 @@ class Plots:
             return_type = "tensor"
         else:
             return_type = "list"
-        predictions = model.predict(model=model, test_loader=test_loader, device=self.device, binary=binary,
-                                    return_type=return_type)
+
+        predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
 
         if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu

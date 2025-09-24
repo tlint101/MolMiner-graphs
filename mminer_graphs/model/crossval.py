@@ -23,7 +23,6 @@ class CrossVal:
         elif isinstance(estop, EarlyStopping):
             self.early_stopping = estop
 
-
     def get_cv_split(self, dataset: Optional[pd.DataFrame] = None, labels: str = "CV", cv: int = 5):
         """
         Obtain index for train/test split. Index is based on input CV label headers from DataFrame. This will output a
@@ -57,7 +56,8 @@ class CrossVal:
                       dataset: Optional[pd.DataFrame] = None, labels: str = "CV", cv: int = 1, smi_col=None,
                       activity_col=None, add_feats: Optional[np.array] = None, batch_size: int = 32, epochs: int = 10,
                       optimizer: str = "adam", lr: float = 0.01, wt_decay: float = 0.0, device: str = "auto",
-                      verbose: bool = False, device_warn: bool = True, pbar: bool = True, seed: int = 42):
+                      drop_last: bool = False, verbose: bool = False, device_warn: bool = True, pbar: bool = True,
+                      seed: int = 42):
         """
         Loop a given nn.Module model to get the average cv scores. Dataset should be given as a pd.DataFrame with a
         format found in mol-miner. The output will be a dictionary containing mole metrics as a list and an average over
@@ -93,6 +93,8 @@ class CrossVal:
             Reduce the calculation of weights to the loss function.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
+        :param drop_last: bool
+            Drop last batch if using a normalizer requiring mini-batches greater than 1. Only used on train_loader.
         :param verbose: bool
             Whether to output the train/test accuracy and loss for each epoch.
         :param device_warn:
@@ -148,8 +150,8 @@ class CrossVal:
 
             # load data
             train_loader = DataLoader(train_graphs, batch_size=batch_size, shuffle=True,
-                                      worker_init_fn=set_seed(seed))
-            test_loader = DataLoader(test_graphs, batch_size=batch_size)
+                                      worker_init_fn=set_seed(seed), drop_last=drop_last)
+            test_loader = DataLoader(test_graphs, batch_size=batch_size, drop_last=False)
 
             # # for troubleshooting
             # print(train_loader.dataset[0])
@@ -177,7 +179,7 @@ class CrossVal:
                    'Precision_ave': round(np.mean(prec_list), 3), 'Recall_avg': round(np.mean(recall_list), 3),
                    'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
                    'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
-                   'Loss_ave': round(np.mean(loss_list), 3),}
+                   'Loss_ave': round(np.mean(loss_list), 3), }
         metrics_df = pd.DataFrame([metrics])
 
         return metrics_df
