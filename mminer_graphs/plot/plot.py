@@ -4,13 +4,14 @@ import torch
 import torch.nn as nn
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix, classification_report
 from typing import Optional, Union
 from torchviz import make_dot
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.data import DataLoader
 from mminer_graphs.model.model_utils import set_seed, get_device
+from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
+from sklearn.metrics import precision_recall_curve, average_precision_score
 
 
 class Plots:
@@ -129,7 +130,7 @@ class Plots:
 
     def confusion_matrix(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                          class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                         title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
+                         title: str = None, binary: Union[bool, float, str] = 0.5, savepath: str = None):
         """
         Generate a confusion matrix for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -184,7 +185,13 @@ class Plots:
         else:
             return_type = "list"
 
-        predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
+        # get prediction labels
+        if isinstance(binary, float):
+            predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
+            # apply cutoff
+            predictions = [1 if p >= binary else 0 for p in predictions]
+        else:
+            predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
 
         if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu
@@ -226,7 +233,7 @@ class Plots:
 
     def classification_report(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                               class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                              title: str = None, binary: Union[bool, float, str] = True, savepath: str = None):
+                              title: str = None, binary: Union[bool, float, str] = 0.5, savepath: str = None):
         """
         Generate a classification report for binary classification torch models.
         :param model: Optional[torch.nn]
@@ -284,7 +291,13 @@ class Plots:
         else:
             return_type = "list"
 
-        predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
+        # get prediction labels
+        if isinstance(binary, float):
+            predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
+            # apply cutoff
+            predictions = [1 if p >= binary else 0 for p in predictions]
+        else:
+            predictions = model.predict(data=data, device=self.device, binary=binary, return_type=return_type)
 
         if self.device == "cuda" or self.device == "gpu":
             # move tensors to cpu
@@ -313,6 +326,189 @@ class Plots:
         plt.title(title)
         plt.xlabel("Metrics")
         plt.ylabel("Classes")
+        plt.tight_layout()
+
+        if savepath is not None:
+            fig.savefig(savepath, bbox_inches='tight', dpi=300)
+            plt.show()
+
+        plt.show()
+
+    def roc_curve(self, model: Optional[Union[torch.nn, list[torch.nn]]] = None, data: Optional[DataLoader] = None,
+                  model_names: Optional[list] = None, color: Union[str, list] = "orange", figsize: tuple = (8, 6),
+                  title: str = None, binary: Union[bool, float, str] = 0.5, savepath: str = None):
+        """
+        Generate a ROC curve for torch classification models. If a list of torch models are given, all curves will be
+        plotted on a single plot.
+        :param model: Optional[Union[torch.nn, list[torch.nn]]]
+            Optional. A trained torch model.
+        :param data: Optional[DataLoader]
+            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
+            model training.
+        :param model_names: Optional[list]
+            A list of model names. Only used if model is set to a list of torch models.
+        :param color: Union[str, list]
+            Set the color palette for the figure.
+        :param figsize: tuple
+            Set the figure size.
+        :param title: str
+            Set the title of the figure. If None given, the default title will be used.
+        :param binary: Union[bool, float, str]
+            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
+        :param savepath: str
+            Set the figure savepath.
+        :return:
+        """
+        if model is None:
+            model = self.model
+        if not isinstance(model, list):
+            if not model.is_fitted:
+                raise ValueError("Torch model is not fitted!!!")
+        if data is None:
+            data = self.data
+        if title is None:
+            title = "Receiver Operating Characteristic (ROC)"
+
+        # get labels from test_loader
+        all_labels = []
+        # get labels
+        for datapoint in data:
+            if hasattr(datapoint, "y"):
+                all_labels.append(datapoint.y)
+            elif hasattr(datapoint, "label"):
+                all_labels.append(datapoint.label)
+            elif hasattr(datapoint, "graph_labels"):
+                all_labels.append(datapoint.graph_labels)
+            else:
+                raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+        all_labels = np.array(all_labels).squeeze()
+
+        # plot
+        fig = plt.figure(figsize=figsize)
+
+        if isinstance(model, list):
+            for x, name, c in zip(model, model_names, color):
+                predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                # get false/true positive rate and thresholds
+                fpr, tpr, thresholds = roc_curve(all_labels, predictions)
+                roc_auc = roc_auc_score(all_labels, predictions)
+                plt.plot(fpr, tpr, color=c, lw=2, label=f"{name} {roc_auc:.3f}")
+        else:
+            predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
+            # get false/true positive rate and thresholds
+            fpr, tpr, thresholds = roc_curve(all_labels, predictions)
+            roc_auc = roc_auc_score(all_labels, predictions)
+
+            # identify the best threshold using Youden's J statistic
+            j = tpr - fpr
+            x = np.argmax(j)
+            best_threshold = thresholds[x]
+            b_threshold = f"Best threshold: {best_threshold:.3f}"
+
+            # only save for single models
+            self.thresholds = thresholds
+            self.best_threshold = b_threshold
+
+            # plot
+            plt.plot(fpr, tpr, color=color, lw=2, label=f"ROC curve {roc_auc:.3f}")
+
+        plt.plot([0, 1.05], [0, 1.05], color="gray", linestyle=(0, (5, 10)), lw=1)
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title(title)
+        plt.legend(loc="lower right")
+        plt.xlim([0, 1.05])
+        plt.ylim([0, 1.05])
+        plt.tight_layout()
+
+        if savepath is not None:
+            fig.savefig(savepath, bbox_inches='tight', dpi=300)
+            plt.show()
+
+        plt.show()
+
+    def pr_curve(self, model: Optional[Union[torch.nn, list[torch.nn]]] = None, data: Optional[DataLoader] = None,
+                 model_names: Optional[list] = None, chance_level: bool = False, color: Union[str, list] = "orange",
+                 figsize: tuple = (8, 6), title: str = None, binary: Union[bool, float, str] = 0.5,
+                 savepath: str = None):
+        """
+        Generate a Precision=Recall curve for torch classification models. If a list of torch models are given, all
+        curves will be plotted on a single plot.
+        :param model: Optional[Union[torch.nn, list[torch.nn]]]
+            Optional. A trained torch model.
+        :param data: Optional[DataLoader]
+            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
+            model training.
+        :param model_names: Optional[list]
+            A list of model names. Only used if model is set to a list of torch models.
+        :param chance_level: bool
+            Whether to plot a chance level curve. This is the positive label predictions over total samples. The chance
+            level indicates precision of randomly guessed positives labels.
+        :param color: Union[str, list]
+            Set the color palette for the figure.
+        :param figsize: tuple
+            Set the figure size.
+        :param title: str
+            Set the title of the figure. If None given, the default title will be used.
+        :param binary: Union[bool, float, str]
+            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
+        :param savepath: str
+            Set the figure savepath.
+        :return:
+        """
+        if model is None:
+            model = self.model
+        if not isinstance(model, list):
+            if not model.is_fitted:
+                raise ValueError("Torch model is not fitted!!!")
+        if data is None:
+            data = self.data
+        if title is None:
+            title = "Precision-Recall Curve"
+
+        # get labels from test_loader
+        all_labels = []
+        # get labels
+        for datapoint in data:
+            if hasattr(datapoint, "y"):
+                all_labels.append(datapoint.y)
+            elif hasattr(datapoint, "label"):
+                all_labels.append(datapoint.label)
+            elif hasattr(datapoint, "graph_labels"):
+                all_labels.append(datapoint.graph_labels)
+            else:
+                raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+        all_labels = np.array(all_labels).squeeze()
+
+        # plot
+        fig = plt.figure(figsize=figsize)
+
+        if isinstance(model, list):
+            for x, name, c in zip(model, model_names, color):
+                predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                # get prec/recall/pr_threshold
+                prec, recall, pr_threshold = precision_recall_curve(all_labels, predictions)
+                avg_prec = average_precision_score(all_labels, predictions)
+                plt.plot(recall, prec, color=c, lw=2, label=f"{name} {avg_prec:.3f}")
+        else:
+            predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
+            # get prec/recall/pr_threshold
+            prec, recall, pr_threshold = precision_recall_curve(all_labels, predictions)
+            avg_prec = average_precision_score(all_labels, predictions)
+
+            # plot
+            plt.plot(recall, prec, color=color, lw=2, label=f"Precision-Recall Avg: {avg_prec:.3f}")
+
+        if chance_level:
+            chance = all_labels.mean()
+            plt.axhline(y=chance, color="gray", linestyle=(0, (5, 10)), lw=1, label=f"Chance Level: {chance:.3f}")
+
+        plt.xlabel("Recall")
+        plt.ylabel("Precision")
+        plt.title(title)
+        plt.legend(loc="best")
+        # plt.xlim([0, 1])
+        # plt.ylim([0, 1])
         plt.tight_layout()
 
         if savepath is not None:
