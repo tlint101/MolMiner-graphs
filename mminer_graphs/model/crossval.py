@@ -160,7 +160,7 @@ class CrossVal:
             if model.is_fitted:
                 model.reset_params()
 
-            model.fit(model, train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device,
+            model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device,
                       estop=estop, lr=lr, wt_decay=wt_decay, pbar=False, verbose=verbose,
                       device_warn=device_warn)
 
