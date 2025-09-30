@@ -55,7 +55,6 @@ def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, ba
         return sum(model=model, data=data_input)
 
 
-
 class MolToGraph:
     def __init__(self, smi: str, label: Optional[Union[int, float]] = None, graph_type: str = "AtomGraph",
                  add_smi: bool = False, add_feats=None, with_atom_index: bool = False):
@@ -325,20 +324,17 @@ class Base(nn.Module):
         reset the layers in GCNConvNet
         :return:
         """
+
         # graph layers
-        if hasattr(self, "gcn_conv"):
-            conv_layers = getattr(self, "gcn_conv")
-        elif hasattr(self, "gine_conv"):
-            conv_layers = getattr(self, "gine_conv")
-        elif hasattr(self, "sage_conv"):
-            conv_layers = getattr(self, "sage_conv")
-        elif hasattr(self, "gat_conv"):
-            conv_layers = getattr(self, "gat_conv")
-        else:
-            raise ValueError("No conv layers defined found!")
-        for layer in conv_layers:
-            if hasattr(layer, 'reset_parameters'):
-                layer.reset_parameters()
+        conv_layer_names = ["gcn_conv", "gine_conv", "sage_conv", "gat_conv"]
+        conv_layers = None
+        for name in conv_layer_names:
+            if hasattr(self, name):
+                conv_layers = getattr(self, name)
+                break
+
+        if conv_layers is None:
+            raise ValueError("No defined conv layers found!")
 
         # mlp layers
         for x in self.mlp:
@@ -401,12 +397,10 @@ class Base(nn.Module):
             # load params by model
             if model.__class__ == GCNNet:
                 for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
-                                    "mlp_dropout",
-                                    "add_feats"]
+                                    "mlp_dropout", "add_feats"]
             elif model.__class__ == GINENet:
                 for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                    "mlp_dropout",
-                                    "add_feats"]
+                                    "mlp_dropout", "add_feats"]
             else:
                 raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
             model_params = {param_key: params[param_key] for param_key in for_model_params}
@@ -544,12 +538,21 @@ class GCNNet(Base):
 
         # concatenate additional features
         if hasattr(data, "add_feats"):
-            if not isinstance(data.add_feats, torch.Tensor):
-                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            add_feats = data.add_feats
+            if not isinstance(add_feats, torch.Tensor):
+                add_feats = torch.tensor(add_feats, device=x.device, dtype=x.dtype)
             else:
-                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+                add_feats = add_feats.to(device=x.device, dtype=x.dtype)
 
-            x = torch.cat([x, add_feats], dim=1)
+            # ensure add_feats is 2D
+            if add_feats.dim() == 1:
+                add_feats = add_feats.unsqueeze(0)  # [1, features]
+
+            # match batch size if needed
+            if add_feats.size(0) == 1 and x.size(0) > 1:
+                add_feats = add_feats.expand(x.size(0), -1)
+            elif add_feats.size(0) != x.size(0):
+                raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
         # build mlp layers
         for layer in self.mlp:
@@ -664,10 +667,21 @@ class GINENet(Base):
 
         # concatenate additional features
         if hasattr(data, "add_feats"):
-            if not isinstance(data.add_feats, torch.Tensor):
-                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            add_feats = data.add_feats
+            if not isinstance(add_feats, torch.Tensor):
+                add_feats = torch.tensor(add_feats, device=x.device, dtype=x.dtype)
             else:
-                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+                add_feats = add_feats.to(device=x.device, dtype=x.dtype)
+
+            # ensure add_feats is 2D
+            if add_feats.dim() == 1:
+                add_feats = add_feats.unsqueeze(0)  # [1, features]
+
+            # match batch size if needed
+            if add_feats.size(0) == 1 and x.size(0) > 1:
+                add_feats = add_feats.expand(x.size(0), -1)
+            elif add_feats.size(0) != x.size(0):
+                raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
             x = torch.cat([x, add_feats], dim=1)
 
@@ -782,12 +796,21 @@ class GSAGENet(Base):
 
         # concatenate additional features
         if hasattr(data, "add_feats"):
-            if not isinstance(data.add_feats, torch.Tensor):
-                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            add_feats = data.add_feats
+            if not isinstance(add_feats, torch.Tensor):
+                add_feats = torch.tensor(add_feats, device=x.device, dtype=x.dtype)
             else:
-                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+                add_feats = add_feats.to(device=x.device, dtype=x.dtype)
 
-            x = torch.cat([x, add_feats], dim=1)
+            # ensure add_feats is 2D
+            if add_feats.dim() == 1:
+                add_feats = add_feats.unsqueeze(0)  # [1, features]
+
+            # match batch size if needed
+            if add_feats.size(0) == 1 and x.size(0) > 1:
+                add_feats = add_feats.expand(x.size(0), -1)
+            elif add_feats.size(0) != x.size(0):
+                raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
         # build mlp layer
         for layer in self.mlp:
@@ -908,12 +931,21 @@ class GATNet(Base):
 
         # concatenate additional features
         if hasattr(data, "add_feats"):
-            if not isinstance(data.add_feats, torch.Tensor):
-                add_feats = torch.tensor(data.add_feats, device=x.device, dtype=x.dtype)
+            add_feats = data.add_feats
+            if not isinstance(add_feats, torch.Tensor):
+                add_feats = torch.tensor(add_feats, device=x.device, dtype=x.dtype)
             else:
-                add_feats = data.add_feats.to(device=x.device, dtype=x.dtype)
+                add_feats = add_feats.to(device=x.device, dtype=x.dtype)
 
-            x = torch.cat([x, add_feats], dim=1)
+            # ensure add_feats is 2D
+            if add_feats.dim() == 1:
+                add_feats = add_feats.unsqueeze(0)  # [1, features]
+
+            # match batch size if needed
+            if add_feats.size(0) == 1 and x.size(0) > 1:
+                add_feats = add_feats.expand(x.size(0), -1)
+            elif add_feats.size(0) != x.size(0):
+                raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
         # build mlp layer
         for layer in self.mlp:
