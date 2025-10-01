@@ -1215,7 +1215,7 @@ class MLP_Baseline(nn.Module):
 
 class MLP(MLP_Baseline):
     def __init__(self, input_size: int = 1024, hidden_size: int = 64, layers: int = 1, dropout: float = 0.0,
-                 num_classes: int = 2, reduce_size: bool = False, act: str = "relu"):
+                 num_classes: int = 2, reduce_size: bool = True, act: str = "relu"):
         """
         Generate an MLP model.
         :param input_size: int
@@ -1263,14 +1263,15 @@ class MLP(MLP_Baseline):
     @staticmethod
     def _build_mlp(input_dim, hidden_size, layers, num_classes, dropout, reduce_size):
         """Dynamically build mlp layer. Method shared between graph neural networks."""
+        layer_num = 0
         dimension = input_dim  # graph latent space
         # loop mlp layers
         model_layers = nn.ModuleList()
 
         for _ in range(layers - 1):
             # optional, halve hidden size if reduce_size is True
-            if reduce_size:
-                hidden_size = round(dimension / 2)
+            if reduce_size and layer_num > 0:
+                hidden_size = round(hidden_size / 2)
             model_layers.append(nn.Sequential(
                 nn.Linear(dimension, hidden_size),
                 nn.BatchNorm1d(hidden_size),
@@ -1278,6 +1279,7 @@ class MLP(MLP_Baseline):
                 nn.Dropout(dropout)
             ))
             dimension = hidden_size
+            layer_num += 1
         # final mlpl layer
         model_layers.append(nn.Linear(dimension, num_classes))
 
