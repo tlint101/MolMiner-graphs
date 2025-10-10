@@ -16,41 +16,52 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 
 class Plots:
     def __init__(self, model: Optional[torch.nn] = None, data_loader: Optional[DataLoader] = None,
-                 x_test: Optional[Union[list, np.ndarray]] = None, y_test: Optional[Union[list, np.ndarray]] = None,
+                 x_data: Optional[Union[list, np.ndarray]] = None, y_data: Optional[Union[list, np.ndarray]] = None,
                  batch_size: Optional[int] = None, device: str = "auto"):
         """
-        Instantiate Plots class. For MLP models only, x_test and y_test are required. Otherwise, data_loader is only
-        needed for graph models.
+        Instantiate Plots class. For MLP models only, x_test and y_test are required. Otherwise, graph data will be
+        input using the data argument.
         :param model: Optional[torch.nn]
+            Trained torch model
         :param data_loader: Optional[DataLoader]
-        :param x_test: Optional[Union[list, np.ndarray]]
-        :param y_test: Optional[Union[list, np.ndarray]]
+            The test dataset used during training. Can be a DataLoader or a list. If a list is given, it will be
+            converted to type DataLoader internally.
+        :param x_data: Optional[Union[list, np.ndarray]]
+            Tabular data features used for torch MLP models.
+        :param y_data: Optional[Union[list, np.ndarray]]
+            Tabular data labels used for torch MLP models.
         :param batch_size: Optional[int]
+            Set the batch size for the Dataloader. Only used if the data given is a list.
         :param device: str
             Set the device for the test_loader tensors. Can be "auto", "cuda", "mps", or "cpu".
         """
         self.model = model
         self.device = device
+        self.thresholds = None
+        self.best_threshold = None
 
-        # if list or nd.array given for x_test and y_test
-        if x_test and y_test is not None:
+
+        # if tabular MLP data
+        if x_data and y_data is not None:
             # check dataset input:
-            if all(isinstance(x, np.ndarray) for x in (x_test, y_test)):
+            if all(isinstance(x, np.ndarray) for x in (x_data, y_data)):
                 pass  # can convert to tensor
-            elif all(isinstance(x, list) for x in (x_test, y_test)):  # convert list to array
-                x_test, y_test = (np.array(x_test), np.array(y_test))
+            elif all(isinstance(x, list) for x in (x_data, y_data)):  # convert list to array
+                x_data, y_data = (np.array(x_data), np.array(y_data))
 
             # convert to tensor
-            x_test = torch.tensor(x_test, dtype=torch.float32, device=device)
-            y_test = torch.tensor(y_test, dtype=torch.long, device=device)
+            x_data = torch.tensor(x_data, dtype=torch.float32, device=device)
+            y_data = torch.tensor(y_data, dtype=torch.long, device=device)
 
             # wrap tensors into a Dataset
-            test_dataset = TensorDataset(x_test, y_test)
+            test_dataset = TensorDataset(x_data, y_data)
 
             # load data
             test_loader = TorchDataLoader(test_dataset, batch_size=batch_size)
+            self.tabular = True
         else:
             test_loader = None
+            self.tabular = True
 
         if data_loader:
             self.data = data_loader
@@ -79,6 +90,7 @@ class Plots:
             Set the savepath for the image.
         :return:
         """
+        global input_metrics
         if model is None:
             model = self.model
         if not model.is_fitted:
@@ -379,6 +391,10 @@ class Plots:
                 all_labels.append(datapoint.label)
             elif hasattr(datapoint, "graph_labels"):
                 all_labels.append(datapoint.graph_labels)
+            # if input data is tabular
+            elif self.tabular == True:
+                data = datapoint[0]
+                all_labels.append(datapoint[1])
             else:
                 raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
         all_labels = np.array(all_labels).squeeze()
@@ -476,6 +492,10 @@ class Plots:
                 all_labels.append(datapoint.label)
             elif hasattr(datapoint, "graph_labels"):
                 all_labels.append(datapoint.graph_labels)
+            # if input data is tabular
+            elif self.tabular == True:
+                data = datapoint[0]
+                all_labels.append(datapoint[1])
             else:
                 raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
         all_labels = np.array(all_labels).squeeze()
