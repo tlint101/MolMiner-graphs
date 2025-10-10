@@ -84,11 +84,21 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
 
     # edge_index: bond connections
     edge_index = graph.edge_index
-    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    # if single atom
+    if len(edge_index) == 0:
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+    # full mol
+    else:
+        edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
 
     # bond features
     bond = graph.edge_features
-    bond = torch.tensor(np.array(graph.edge_features), dtype=torch.float).contiguous()
+    # if single atom
+    if len(bond) == 0:
+        bond = torch.empty((0, 16), dtype=torch.float)  # replace 16 with your edge_dim
+    # full mol
+    else:
+        bond = torch.tensor(bond, dtype=torch.float).contiguous()
 
     # append smi string
     smiles = graph.smi
