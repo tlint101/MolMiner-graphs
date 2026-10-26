@@ -54,16 +54,15 @@ class CrossVal:
         return splits
 
     def get_cv_scores(self, graph_type: str = "AtomGraph", dataset: Optional[pd.DataFrame] = None, labels: str = "CV",
-                      cv: int = 1, smi_col=None, activity_col=None, add_feats: Optional[np.array] = None,
+                      cv: int = 1, smi_col=None, activity_col=None, add_feats: Optional[Union[np.ndarray, list]] = None,
                       batch_size: int = 32, epochs: int = 10, optimizer: str = "adam", lr: float = 0.01,
-                      wt_decay: float = 0.0, device: str = "auto", drop_last: bool = False, verbose: bool = False,
-                      device_warn: bool = True, pbar: bool = True, seed: int = 42):
+                      wt_decay: float = 0.0, criterion: str = "cross_entropy", device: str = "auto",
+                      drop_last: bool = False, verbose: bool = False, device_warn: bool = True, pbar: bool = True,
+                      seed: int = 42):
         """
         Loop a given nn.Module model to get the average cv scores. Dataset should be given as a pd.DataFrame with a
         format found in mol-miner. The output will be a dictionary containing mole metrics as a list and an average over
         the cv number.
-        :param model: Optional[mlx.nn.Module]
-            Input torch model.
         :param graph_type: str
             The molecular graph type to generate from smiles string. Can be 'AtomGraph', 'PharmacophoreGraph'
             'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.
@@ -91,6 +90,8 @@ class CrossVal:
             Set the optimizer learning rate.
         :param wt_decay: float
             Reduce the calculation of weights to the loss function.
+        :param criterion: str
+            Set the loss criterion.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param drop_last: bool
@@ -107,51 +108,77 @@ class CrossVal:
             A dictionary containing a list of metrics and average metrics. The dictionary can be fed into a
             pd.DataFrame.
         """
+        global loss_list, acc_list, prec_list, mcc_list, recall_list, f1_list, roc_auc_list, r2_list, mae_list, rmse_list, train_graphs, test_graphs
         if dataset is None:
             dataset = self.dataset
         model = self.model
 
-        set_seed(42)
+        set_seed(seed)
 
         cv_index = self.get_cv_split(dataset, labels, cv)
         data = dataset[[smi_col, activity_col]]
 
-        loss_list = []
-        acc_list = []
-        prec_list = []
-        mcc_list = []
-        recall_list = []
-        f1_list = []
-        roc_auc_list = []
+        # hold scores
+        if model.type == "Classification":
+            loss_list = []
+            acc_list = []
+            prec_list = []
+            mcc_list = []
+            recall_list = []
+            f1_list = []
+            roc_auc_list = []
+        elif model.type == "Regression":
+            loss_list = []
+            r2_list = []
+            mae_list = []
+            rmse_list = []
+
+        # convert list to numpy
+        if add_feats is not None:
+            if isinstance(add_feats, list):
+                add_feats = np.array(add_feats, dtype=np.float32)
 
         # extract by index
         for x in tqdm(range(len(cv_index)), desc="CV Round", disable=not pbar):
-            train_df = data.loc[cv_index[x][0]]
-            test_df = data.loc[cv_index[x][1]]
+            train_indices = cv_index[x][0]
+            test_indices = cv_index[x][1]
+            train_df = data.loc[train_indices]
+            test_df = data.loc[test_indices]
 
-            # set model
-            estop = self.early_stopping
-            if x > 0:
-                estop.reset()
-
-            # create array of graphs for train/test
+            # slice add_feats
             if add_feats is not None:
+                train_add_feats = add_feats[train_indices]
+                test_add_feats = add_feats[test_indices]
+                # # debugging
+                # print(f"length of train_df: {len(train_df)}")
+                # print(f"length of test_df: {len(test_df)}")
+                # print(f"length of additional features: {len(add_feats)}")
+                # print(f"length of train_add_feats: {len(train_add_feats)}")
+                # print(f"length of test_add_feats: {len(test_add_feats)}")
+
+                # create graphs with add_feats
                 train_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data for
-                                smi, y, extra in zip(train_df[smi_col], train_df[activity_col], add_feats)]
+                                smi, y, extra in zip(train_df[smi_col], train_df[activity_col], train_add_feats)]
                 test_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data for
-                               smi, y, extra in zip(test_df[smi_col], test_df[activity_col], add_feats)]
+                               smi, y, extra in zip(test_df[smi_col], test_df[activity_col], test_add_feats)]
             else:
                 train_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data for smi, y, in
                                 zip(train_df[smi_col], train_df[activity_col])]
                 test_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data for smi, y in
                                zip(test_df[smi_col], test_df[activity_col])]
 
+            # todo move this outside of loop and create chunks to be passed?
             # load data
             train_loader = Dataloader(train_graphs, batch_size=batch_size, shuffle=True)
             test_loader = Dataloader(test_graphs, batch_size=batch_size)
 
             # # for troubleshooting
             # print(train_loader.dataset[0])
+
+            # set model
+            estop = self.early_stopping
+            if x > 0:
+                estop.reset()
 
             # confirm model fit during cv cycles
             if x == 0:
@@ -161,26 +188,45 @@ class CrossVal:
                 model.reset_params()
                 # print(model.parameters())
 
-            model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device,
-                      estop=estop, lr=lr, wt_decay=wt_decay, pbar=False, verbose=verbose,
-                      device_warn=device_warn)
+            # # for debugging
+            # from mminer_graphs.mlx_models import summary
+            # print(summary(model))
+
+            model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device, estop=estop, lr=lr,
+                      wt_decay=wt_decay, pbar=False, verbose=verbose, criterion=criterion, device_warn=device_warn)
 
             # scores
-            loss_list.append(round(float(np.mean(model.metrics.test_loss)), 3))
-            acc_list.append(round(float(np.mean(model.metrics.test_accuracy)), 3))
-            prec_list.append(round(float(np.mean(model.metrics.test_precision)), 3))
-            mcc_list.append(round(float(np.mean(model.metrics.mcc)), 3))
-            recall_list.append(round(float(np.mean(model.metrics.recall)), 3))
-            f1_list.append(round(float(np.mean(model.metrics.f1_score)), 3))
-            roc_auc_list.append(round(float(np.mean(model.metrics.roc_auc)), 3))
+            best_test_epoch = np.argmin(model.metrics.test_loss)
+            if model.type == "Classification":
+                loss_list.append(model.metrics.test_loss[best_test_epoch])
+                acc_list.append(model.metrics.test_accuracy[best_test_epoch])
+                prec_list.append(model.metrics.test_precision[best_test_epoch])
+                mcc_list.append(model.metrics.mcc[best_test_epoch])
+                recall_list.append(model.metrics.recall[best_test_epoch])
+                f1_list.append(model.metrics.f1_score[best_test_epoch])
+                roc_auc_list.append(model.metrics.roc_auc[best_test_epoch])
+            elif model.type == "Regression":
+                loss_list.append(model.metrics.test_loss[best_test_epoch])
+                r2_list.append(model.metrics.test_r2[best_test_epoch])
+                mae_list.append(model.metrics.test_mae[best_test_epoch])
+                rmse_list.append(model.metrics.test_rmse[best_test_epoch])
 
         # convert metrics into a pd.DataFrame
-        metrics = {'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list, 'F1': f1_list, 'MCC': mcc_list,
-                   'ROC_AUC': roc_auc_list, 'Accuracy_ave': round(np.mean(acc_list), 3),
-                   'Precision_ave': round(np.mean(prec_list), 3), 'Recall_avg': round(np.mean(recall_list), 3),
-                   'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
-                   'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
-                   'Loss_ave': round(np.mean(loss_list), 3), }
+        if model.type == "Classification":
+            metrics = {'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list, 'F1': f1_list,
+                       'MCC': mcc_list,
+                       'ROC_AUC': roc_auc_list, 'Accuracy_ave': round(np.mean(acc_list), 3),
+                       'Precision_ave': round(np.mean(prec_list), 3), 'Recall_avg': round(np.mean(recall_list), 3),
+                       'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
+                       'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
+                       'Loss_ave': round(np.mean(loss_list), 3), }
+        elif model.type == "Regression":
+            metrics = {'r2': r2_list, 'MAE': mae_list, 'RMSE': rmse_list, 'r2_ave': round(np.mean(r2_list), 3),
+                       'MAE_ave': round(np.mean(mae_list), 3), 'RMSE': round(np.mean(rmse_list), 3),
+                       'Loss': loss_list, 'Loss_ave': round(np.mean(loss_list), 3), }
+        else:
+            raise ValueError("Issue with model.type!")
+
         metrics_df = pd.DataFrame([metrics])
 
         return metrics_df

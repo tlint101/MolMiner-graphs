@@ -1,3 +1,4 @@
+import subprocess
 import mlx.core as mx
 import mlx.nn as mlx_nn
 import mlx.optimizers as optim
@@ -23,22 +24,28 @@ MLX_ACT = {
     "tanh": mlx_nn.tanh,
 }
 
-MLX_CRITERIONS = {
+MLX_CLASSIFICATION = {
     # Classification
     "cross_entropy": mlx_nn.losses.cross_entropy,
     "nll": mlx_nn.losses.nll_loss,
     "kl_divergence": mlx_nn.losses.kl_div_loss,
     # "bce_with_logits": mlx_nn.losses.BCEWithLogitsLoss,
     # "poisson": mlx_nn.PoissonNLLLoss,
+}
+
+MLX_REGRESSION = {
     # Regression
     "mse": mlx_nn.losses.mse_loss,
     "l1": mlx_nn.losses.l1_loss,
     "smooth_l1": mlx_nn.losses.smooth_l1_loss,
     "huber": mlx_nn.losses.huber_loss,
     # Others
-    "cosine_similarity": mlx_nn.losses.cosine_similarity_loss,
-    "triplet_margin": mlx_nn.losses.triplet_loss,
+    # "cosine_similarity": mlx_nn.losses.cosine_similarity_loss,
+    # "triplet_margin": mlx_nn.losses.triplet_loss,
 }
+
+# combine criterion dict
+MLX_CRITERIONS = {**MLX_CLASSIFICATION, **MLX_REGRESSION}
 
 
 # support function to get apple silicon gpu, cpu, or cuda
@@ -59,9 +66,17 @@ def get_device(device_type="auto"):
             f"Trying to run device on {device_type}. Only 'auto', 'cuda', 'gpu'(cuda), 'mps' or 'cpu' are supported!!")
     return device
 
+
+def state_apple_silicon_device():
+    output = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                            capture_output=True, text=True)
+    return output.stdout.strip()
+
+
 # set seed for mlx
 def set_seed(seed: int = 42) -> None:
     mx.random.seed(seed)
+
 
 if __name__ == "__main__":
     import doctest
