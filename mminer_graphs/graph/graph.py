@@ -6,7 +6,8 @@ Communications Chemistry (2024), https://doi.org/10.1038/s42004-024-01084-4
 """
 
 from mminer_graphs.graph.graph_utils import *
-from rdkit.Chem import rdchem, ValenceType
+from rdkit.Chem import rdchem
+from rdkit import Chem
 
 __all__ = ["MolGraph", "AtomGraph", "GLOBAL_VALUES"]
 
@@ -169,7 +170,7 @@ class AtomGraph(MolGraph):
         atom_feats += one_hot_encode(atom.GetDegree(), list(range(11)))
 
         # implicit valence
-        atom_feats += one_hot_encode(atom.GetValence(ValenceType.IMPLICIT), list(range(7)))
+        atom_feats += one_hot_encode(atom.GetValence(Chem.ValenceType.IMPLICIT), list(range(7)))
 
         # formal charge
         formal_charges = [-2, -1, 0, 1, 2]
