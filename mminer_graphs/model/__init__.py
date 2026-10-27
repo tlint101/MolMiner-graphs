@@ -7,5 +7,5 @@ from .latent_space import *
 from .model_utils import mol_to_graph
 from .crossval import CrossVal
 
-__all__ = ["MolToGraph", "GCNNet", "EarlyStopping", "GINENet", "GSAGENet", "GATNet", "MLP", "GINNet", "SplineConvNet",
-           "mol_to_graph", "summary", "CrossVal", "GCNN", "GINE", "GSAGE", "GAT"]
+__all__ = ["MolToGraph", "EarlyStopping", "GCNNet", "GINNet", "GINENet", "GSAGENet", "GATNet", "GCN", "GINE", "GSAGE",
+           "GAT", "MLP", "mol_to_graph", "summary", "CrossVal"]

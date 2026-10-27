@@ -5,19 +5,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader as TorchDataLoader
-from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.nn import GCNConv, GINConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, \
+    global_add_pool
 from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
 from torchinfo import summary as torchinfo_summary
-from torch_geometric.data import Data
-from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, CRITERIONS, F_ACT
+from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, F_ACT, \
+    state_apple_silicon_device, TORCH_CRITERIONS, TORCH_REGRESSION, TORCH_CLASSIFICATION
 from tqdm import tqdm
-from typing import Optional, Union, Type
-from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score
+from typing import Optional, Union
+from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score, mean_absolute_error, r2_score, \
+    mean_squared_error
 
 
-def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, batch_size: Optional[int] = None,
-            input_size: Optional[tuple] = None, **kwargs):
+def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, x: Optional[Union[list, int]] = None,
+            batch_size: Optional[int] = None, **kwargs):
     """
     Summarize the input nn.Module in a tabular format. If using graph models, input_size is not needed. If using MLP,
     then input_size is needed, but data is not needed.
@@ -26,17 +28,21 @@ def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, ba
     :param data: Union[DataLoader, list]
         The data for training the model. Information must be loaded in class 'DataLoader'. If a 'list' is given, it will
         be internally loaded to the DataLoader.
+    :param x: Optional[list, int]
+        Shape of input of tabular data. Only needed for MLP class.
     :param batch_size: int
         Only needed if the input data is of class 'list'.Needed to set the batch_size of the class 'DataLoader'.
-    :param input_size: tuple
-        Shape of input of tabular data.
     :param kwargs: dict
         Additional arguments passed to torchinfo.
     :return:
     """
 
     # for MLP model
-    if input_size is not None:
+    if x is not None:
+        if isinstance(x, list):  # get lenght of one item from list of tabular data
+            input_size = (1, len(x[0]))
+        elif isinstance(x, int):
+            input_size = (1, x)
         return torchinfo_summary(model, input_size=input_size, batch_size=batch_size, **kwargs)
     else:
         # for graph models
@@ -52,7 +58,10 @@ def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, ba
         data_input = next(iter(data))
 
         # return tabular string
-        return sum(model=model, data=data_input)
+        try:
+            return sum(model=model, data=data_input)
+        except RuntimeError as e:
+            raise RuntimeError(f"{e}\nDoes the model include additional features?")
 
 
 class MolToGraph:
@@ -128,10 +137,37 @@ class EarlyStopping:
                 self.early_stop = True
 
 
+class Metrics:
+    def __init__(self):
+        self.best_epoch = None
+        self.train_loss = []
+        self.test_loss = []
+        self.train_accuracy = []
+        self.test_accuracy = []
+        self.train_precision = []
+        self.test_precision = []
+        self.mcc = []
+        self.recall = []
+        self.f1_score = []
+        self.roc_auc = []
+        self.train_mae = []
+        self.test_mae = []
+        self.train_rmse = []
+        self.test_rmse = []
+        self.train_r2 = []
+        self.test_r2 = []
+
+
 class Base(nn.Module):
     def __init__(self):
         super().__init__()
         self.is_fitted = None
+        self.y_mean = None
+        self.y_std = None
+        self.type = None
+        self.initial_params = None  # todo check if this one is needed
+        # info for plot
+        self.metrics = Metrics()
 
     def fit(self, train_loader: Union[DataLoader, list], test_loader: Union[DataLoader, list], epochs: int = 10,
             optimizer: str = "adam", criterion: str = "cross_entropy", lr: float = 0.01, wt_decay: float = 0.0,
@@ -173,6 +209,7 @@ class Base(nn.Module):
         :return:
         """
         # set model to current instance
+        global y_mean, y_std
         model = self
 
         # check if on the same device
@@ -187,12 +224,8 @@ class Base(nn.Module):
         else:
             raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
 
-        if criterion in CRITERIONS.keys():
-            criterion = CRITERIONS[criterion](**kwargs)
-        elif criterion is None:
-            raise ValueError("No Criterion defined!")
-        else:
-            raise ValueError(f"Criterion not recognized! Only {list(CRITERIONS.keys())} allowed!")
+        # set criterion
+        self.criterion = _set_criterion(criterion, self.type, self.classes)
 
         # check dataset input:
         if isinstance(train_loader, list):
@@ -202,7 +235,10 @@ class Base(nn.Module):
             test_loader = DataLoader(test_loader, batch_size=batch_size)
 
         if device_warn:
-            print(f"Model and Tensor running on {fit_device}")
+            if device == "mps":
+                print(f"Model and Tensor running with MPS on {state_apple_silicon_device()}")
+            else:
+                print(f"Model and Tensor running on {fit_device}")
 
         # reset early_stopping if used
         if estop is not None and isinstance(estop, EarlyStopping):
@@ -210,61 +246,118 @@ class Base(nn.Module):
         elif estop is not None and isinstance(estop, int):
             estop = EarlyStopping(monitor='val_loss', patience=estop, mode='min')
 
-        for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
-            train_loss, train_acc, train_prec = train(model, train_loader, optimizer, criterion, fit_device)
-            test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test(model, test_loader, criterion, fit_device)
+        # classification
+        if isinstance(self.classes, int) and self.classes > 1:
+            for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
+                train_loss, train_acc, train_prec = train_c(model, train_loader, optimizer, self.criterion, fit_device)
+                test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_c(model, test_loader, self.criterion,
+                                                                                  fit_device)
 
-            # add metrics
-            self.train_loss.append(train_loss)
-            self.test_loss.append(test_loss)
-            self.train_accuracy.append(train_acc)
-            self.test_accuracy.append(test_acc)
-            self.train_precision.append(train_prec)
-            self.test_precision.append(test_prec)
-            self.mcc.append(mcc)
-            self.recall.append(recall)
-            self.f1_score.append(f1)
-            self.roc_auc.append(roc_auc)
+                # add metrics
+                self.metrics.train_loss.append(train_loss)
+                self.metrics.test_loss.append(test_loss)
+                self.metrics.train_accuracy.append(train_acc)
+                self.metrics.test_accuracy.append(test_acc)
+                self.metrics.train_precision.append(train_prec)
+                self.metrics.test_precision.append(test_prec)
+                self.metrics.mcc.append(mcc)
+                self.metrics.recall.append(recall)
+                self.metrics.f1_score.append(f1)
+                self.metrics.roc_auc.append(roc_auc)
 
-            if verbose:
-                print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
-                      f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+                if verbose:
+                    print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+                          f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
-            # early stopping
-            if estop is not None:
-                # determine monitoring metric
-                if estop.monitor == "val_loss":
-                    monitor = test_loss
-                elif estop.monitor == "val_acc":
-                    monitor = test_acc
-                else:
-                    raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
+                # early stopping
+                if estop is not None:
+                    # determine monitoring metric
+                    if estop.monitor == "val_loss":
+                        monitor = test_loss
+                    elif estop.monitor == "val_acc":
+                        monitor = test_acc
+                    else:
+                        raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
 
-                estop(monitor)
+                    estop(monitor)
 
-                if estop.early_stop:
-                    print(f"Early stopping triggered after {epoch + 1} epochs!")
-                    break
+                    if estop.early_stop:
+                        print(f"Early stopping triggered after {epoch + 1} epochs!")
+                        break
+        # regression
+        elif self.classes == 1 or self.classes is None:
+            # for scaling, collect all y labels
+            all_y_list = []
+            for data in train_loader:
+                all_y_list.append(data.y)
+            all_y = torch.cat(all_y_list) if all_y_list else None
+
+            y_mean = torch.mean(all_y.float())
+            y_std = torch.std(all_y.float())
+            if y_std == 0: y_std = 1.0
+
+            for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
+                train_loss, train_mae, train_rmse, train_r2 = train_r(model, train_loader, optimizer, self.criterion,
+                                                                      fit_device, y_mean, y_std)
+                test_loss, test_mae, test_rmse, test_r2 = test_r(model, test_loader, self.criterion, fit_device, y_mean,
+                                                                 y_std)
+                # add metrics
+                self.metrics.train_loss.append(train_loss)
+                self.metrics.test_loss.append(test_loss)
+                self.metrics.train_mae.append(train_mae)
+                self.metrics.test_mae.append(test_mae)
+                self.metrics.train_rmse.append(train_rmse)
+                self.metrics.test_rmse.append(test_rmse)
+                self.metrics.train_r2.append(train_r2)
+                self.metrics.test_r2.append(test_r2)
+
+                if verbose:
+                    print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train R2: {train_r2:.4f} | "
+                          f"Test Loss: {test_loss:.4f} | Test R2: {test_r2:.4f}")
+
+                # early stopping
+                if estop is not None:
+                    # determine monitoring metric
+                    if estop.monitor == "val_loss":
+                        monitor = test_loss
+                    else:
+                        raise ValueError("Only 'val_loss' monitors allowed!")
+
+                    estop(monitor)
+
+                    if estop.early_stop:
+                        print(f"Early stopping triggered after {epoch + 1} epochs!")
+                        break
+        # to unstandardize predictions
+        if self.classes == 1 or self.classes is None:
+            self.y_mean = y_mean
+            self.y_std = y_std
 
         # var for cross validation
         self.is_fitted = True
 
-        if device_warn:
-            print(f"Average Training Loss: {round(np.mean(self.train_loss), 3)}")
-            print(f"Average Test Loss: {round(np.mean(self.test_loss), 3)}")
-            print(f"Average Training Accuracy: {round(np.mean(self.train_accuracy), 3)}")
-            print(f"Average Test Accuracy: {round(np.mean(self.test_accuracy), 3)}")
+        # get epoch
+        best_train_epoch = np.argmin(self.metrics.train_loss)
+        best_test_epoch = np.argmin(self.metrics.test_loss)
+        self.metrics.best_epoch = best_test_epoch.item()  # convert from np to int
 
-        # # Optional, this will print the model and its layers
-        # # return instance
-        # return self
+        if device_warn:
+            if isinstance(self.classes, int) and self.classes > 1:  # classification
+                print(f"Best Training Loss: {round(self.metrics.train_loss[best_train_epoch], 3)}")
+                print(f"Best Test Loss: {round(self.metrics.test_loss[best_test_epoch], 3)}")
+                print(f"Best Training Accuracy: {round(self.metrics.train_accuracy[best_train_epoch], 3)}")
+                print(f"Best Test Accuracy: {round(self.metrics.test_accuracy[best_test_epoch], 3)}")
+            else:
+                print(f"Best Training Loss: {round(self.metrics.train_loss[best_train_epoch], 3)}")
+                print(f"Best Test Loss: {round(self.metrics.test_loss[best_test_epoch], 3)}")
+                print(f"Best Training MAE: {round(self.metrics.train_mae[best_train_epoch], 3)}")
+                print(f"Best Test MAE: {round(self.metrics.test_mae[best_test_epoch], 3)}")
 
     def predict(self, data: Union[np.array, list, DataLoader], device: str = "auto",
-                binary: Union[bool, float, str] = True, return_type: str = "list"):
+                binary: Union[bool, float, str, None] = True, cutoff: float = 0.5, return_type: str = "list",
+                add_feats: Optional[Union[np.array, list, int]] = None, pbar: bool = False):
         """
         Handle predictions for an input torch Dataloader.
-        :param model: torch.nn.Module
-            A trained torch model.
         :param data: Union[np.array, list, DataLoader]
             Data for prediction. Must be converted into a graph and organized in an array or list.
         :param device: str
@@ -273,13 +366,25 @@ class Base(nn.Module):
             Set the output for classification models as binary or multi-class. A boolean value will set predictions to
             be binary or multi-class predictions. If a float is given, then a binary predictions will be given with the
             input float used as the cutoff for positive (1) labels. Input strings can be "multi" or "proba", where
-            "multi" will output a multi-class labels and "proba" will output a binary probability vector.
+            "multi" will output a multi-class labels and "proba" will output a binary probability vector. If models are
+            set to type 'Regression', param will be ignored.
+        :param cutoff: float
+            Set the cutoff for binary predictions. This param is only available for binary models and when the binary
+            param is set to 'True'.
         :param return_type: str
             Set the return type of the prediction. Can be "tensor" or "list".
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of additional features to be added. Must be the same as what was given during training.
+        :param pbar: bool
+             Show progress bar for predictions.
         :return:
         """
         # set model to current instance
         model = self
+        if self.add_feats is not None:
+            add_feats = self.add_feats
+        elif self.add_feats is None and add_feats is not None:
+            pass  # use add_feats param
 
         # check if on the same device
         fit_device = get_device(device)
@@ -289,33 +394,61 @@ class Base(nn.Module):
         model.eval()
         all_preds = []
         with torch.no_grad():  # disable gradient calculation
-            for x in data:
+            for x in tqdm(data, disable=not pbar):
                 datapoint = x.to(fit_device)
+
+                # check if x has add_feats
+                if hasattr(x, 'add_feats') and add_feats is not None:
+                    pass  # no issue, input has add_feats and it matches input param
+                elif hasattr(x, 'add_feats') and add_feats is None:
+                    raise ValueError("'add_feats' found in input, but not given for prediction!")
+                elif not hasattr(x, 'add_feats') and add_feats is not None:
+                    raise ValueError("'add_feats' is not in the data input but is given as a parameter!")
+
                 output = model(datapoint)
-                # set for binary, multi-class, or probability output
-                if binary == True or isinstance(binary, float):
-                    proba = F.softmax(output, dim=1)[:, 1]
-                    if isinstance(binary, float):
-                        proba = (proba > binary).long()
+
+                # regression output
+                if self.type == "Regression":
+                    # regression gets raw output, no softmax/thresholding
+                    pred_out = output
+                # classification output
+                elif self.type == "Classification":
+                    # binary labels
+                    if binary == True:
+                        # grab positive class proba (index 1)
+                        proba = F.softmax(output, dim=1)[:, 1]
+                        pred_out = (proba >= cutoff).int()
+                    elif binary is False or binary is None:
+                        # grab positive class proba (index 1)
+                        pred_out = F.softmax(output, dim=1)[:, 1]
+                    # multi-class classification
+                    elif binary == "multi":
+                        pred_out = F.argmax(output, dim=1)
+                    # probabilities in float
+                    elif binary == "proba":
+                        pred_out = F.softmax(output, dim=1)
                     else:
-                        proba = (proba >= 0.5).long()
-                # multi-class classification
-                elif binary == False or binary == "multi":
-                    proba = F.softmax(output, dim=1)
-                    proba = torch.argmax(proba, dim=1)
-                # output probabilities
-                elif binary == "proba":
-                    proba = F.softmax(output, dim=1)
+                        raise ValueError("Only 'multi', 'proba', or 'boolean', is supported!!")
                 else:
-                    raise ValueError("Only 'multi', 'proba', boolean, or float is supported!!")
-                all_preds.append(proba)
+                    raise ValueError("Model is not labeled as type 'Regression' or 'Classification'?")
+
+                all_preds.append(pred_out)
+
+            # combine predictions from batch, concact and extract mx array
+            if self.type == "Regression":
+                predictions = torch.cat(all_preds)
+                if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
+                    predictions = predictions * self.y_std + self.y_mean
+            else:
+                predictions = torch.cat(all_preds)
 
             # conditional check to output as list or tensor
             if return_type == "list":
-                prediction = torch.cat(all_preds)
-                return prediction.tolist()
+                return predictions.tolist()
             elif return_type == "tensor":
-                return torch.cat(all_preds)
+                return predictions
+            elif return_type == "array":
+                return predictions.cpu().numpy()
             else:
                 raise TypeError(f"Type {return_type} not recognized!")
 
@@ -326,7 +459,7 @@ class Base(nn.Module):
         """
 
         # graph layers
-        conv_layer_names = ["gcn_conv", "gine_conv", "sage_conv", "gat_conv"]
+        conv_layer_names = ["gcn_conv", "gin_conv", "gine_conv", "sage_conv", "gat_conv"]
         conv_layers = None
         for name in conv_layer_names:
             if hasattr(self, name):
@@ -387,6 +520,7 @@ class Base(nn.Module):
             with open(param_path, 'r') as f:
                 params = json.load(f)
 
+            device = get_device(device)
             # additional params not found in json file
             params['node_dim'] = node_dim
             params['edge_feat_dim'] = edge_feat_dim
@@ -413,13 +547,16 @@ class Base(nn.Module):
 
             # load saved model
             build_model.load_state_dict(torch.load(model_path))
+            model.is_fitted = True
             print("Model loaded!")
 
             return build_model
         else:
             model = self
+            device = get_device(device)
             # load model and set to eval mode
             model.load_state_dict(torch.load(model_path, map_location=device))
+            model.is_fitted = True
             model.eval()
 
             return model
@@ -438,13 +575,15 @@ class Base(nn.Module):
                 nn.Dropout(dropout)
             ))
             dimension = reduced_dimension
-        # final mlpl layer
+
+        # final mlp layer
+        if num_classes is None:
+            num_classes = 1
         self.final_mlp = nn.Linear(dimension, num_classes)
 
         return self.mlp, self.final_mlp
 
 
-# Graph Convolutional Neural Network
 class GCNNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 128, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
@@ -484,9 +623,20 @@ class GCNNet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.is_fitted = False
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+        self.add_feats = add_feats
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
 
         # set graph layers
         self.gcn_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
 
         # set graph layers
         graph_hidden_dim = hidden_dim
@@ -494,6 +644,7 @@ class GCNNet(Base):
             # for updating the nodes
             in_dim = node_dim if x == 0 else graph_hidden_dim
             self.gcn_conv.append(GCNConv(in_dim, hidden_dim))
+            self.normalization.append(nn.BatchNorm1d(hidden_dim))
 
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
@@ -529,8 +680,151 @@ class GCNNet(Base):
 
         # graph layers
         act_fn = F_ACT[self.act]
-        for conv in self.gcn_conv:
-            x = act_fn(conv(x, edge_index))
+        for i, (conv, norm) in enumerate(zip(self.gcn_conv, self.normalization)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = act_fn(x)
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
+
+        # readout layer
+        x = _global_pooling(x, batch, pool_type=self.pooling)
+
+        # concatenate additional features
+        if hasattr(data, "add_feats"):
+            add_feats = data.add_feats
+            if not isinstance(add_feats, torch.Tensor):
+                add_feats = torch.tensor(add_feats, device=x.device, dtype=x.dtype)
+            else:
+                add_feats = add_feats.to(device=x.device, dtype=x.dtype)
+
+            # ensure add_feats is 2D
+            if add_feats.dim() == 1:
+                add_feats = add_feats.unsqueeze(0)  # [1, features]
+
+            # match batch size if needed
+            if add_feats.size(0) == 1 and x.size(0) > 1:
+                add_feats = add_feats.expand(x.size(0), -1)
+            elif add_feats.size(0) != x.size(0):
+                raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
+            x = torch.cat([x, add_feats], dim=1)
+
+        # build mlp layers
+        for layer in self.mlp:
+            x = layer(x)
+        x = self.final_mlp(x)
+
+        return x
+
+
+# Graph Isomorphism Network
+class GINNet(Base):
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
+                 reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
+                 act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+        """
+        Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
+        graph layers and one mlp layer.
+        :param node_dim: int
+            Length of node feature vector.
+        :param hidden_dim: int
+            Set the dimensions of the hidden layers in the graph network.
+        :param graph_layers: int
+            Number of graph layers.
+        :param mlp_layers: int
+            Set the number of MLP layers.
+        :param reduce_graph: bool
+            Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
+        :param graph_dropout: float
+            Set the graph dropout during activation.
+        :param mlp_dropout: float
+            Indicate a dropout layer after each mlp layer. Defaults to 0 (no dropout).
+        :param num_classes: int
+            Number of classes for the output layer.
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of features to be added. If an int is given, it must correspond to the length of the additional
+            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            and used to append the MLP input dimensions accordingly.
+        :param pooling: str
+            Set pooling method.
+        """
+
+        global reduced_graph_dim
+        super().__init__()
+        self.act = act
+        self.pooling = pooling
+        self.graph_dropout = graph_dropout
+        self.is_fitted = False
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+        self.add_feats = add_feats
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
+
+        # set graph layers
+        self.gin_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
+
+        # set graph layers
+        graph_hidden_dim = hidden_dim
+        for x in range(graph_layers):
+            # for updating the nodes
+            in_dim = node_dim if x == 0 else graph_hidden_dim
+            nnet = nn.Sequential(
+                nn.Linear(in_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),  # normalize node embeddings
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU()
+            )
+
+            self.gin_conv.append(GINConv(nn=nnet))
+            self.normalization.append(nn.BatchNorm1d(hidden_dim))
+
+            # update dimensions for next layer
+            graph_hidden_dim = hidden_dim
+            if reduce_graph:
+                hidden_dim = round(hidden_dim / 2)
+
+        # if a list of additional features are given, will be added to the graph latent array
+        if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
+            add_feat = len(add_feats[0])
+        elif isinstance(add_feats, int):
+            add_feat = add_feats
+        else:
+            add_feat = 0
+
+        # get dimension of mlp layers
+        mlp_dim = graph_hidden_dim + add_feat
+        self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
+
+        # info for plot
+        self.train_loss = []
+        self.test_loss = []
+        self.train_accuracy = []
+        self.test_accuracy = []
+        self.train_precision = []
+        self.test_precision = []
+        self.mcc = []
+        self.recall = []
+        self.f1_score = []
+        self.roc_auc = []
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # graph layers
+        act_fn = F_ACT[self.act]
+        for i, (conv, norm) in enumerate(zip(self.gin_conv, self.normalization)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = act_fn(x)
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
@@ -554,7 +848,9 @@ class GCNNet(Base):
             elif add_feats.size(0) != x.size(0):
                 raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
-        # build mlp layers
+            x = torch.cat([x, add_feats], dim=1)
+
+        # build mlp layer
         for layer in self.mlp:
             x = layer(x)
         x = self.final_mlp(x)
@@ -564,10 +860,10 @@ class GCNNet(Base):
 
 # Graph Isomorphism Network with Edge Features
 class GINENet(Base):
-    def __init__(self, node_dim: int = 142, edge_feat_dim: int = 16, hidden_dim: int = 64, graph_layers: int = 2,
-                 mlp_layers: int = 1, reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
-                 num_classes: int = 2, act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None,
-                 pooling: str = "add"):
+    def __init__(self, node_dim: int = 142, edge_feat_dim: Union[int, None] = 16, hidden_dim: int = 64,
+                 graph_layers: int = 2, mlp_layers: int = 1, reduce_graph: bool = False, graph_dropout: float = 0.0,
+                 mlp_dropout: float = 0.0, num_classes: int = 2, act: str = "relu",
+                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
         """
         Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
         graph layers and one mlp layer.
@@ -605,9 +901,20 @@ class GINENet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.is_fitted = False
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+        self.add_feats = add_feats
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
 
         # set graph layers
         self.gine_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
 
         # set graph layers
         graph_hidden_dim = hidden_dim
@@ -623,6 +930,7 @@ class GINENet(Base):
             )
 
             self.gine_conv.append(GINEConv(nn=nnet, edge_dim=edge_feat_dim))
+            self.normalization.append(nn.BatchNorm1d(hidden_dim))
 
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
@@ -658,8 +966,10 @@ class GINENet(Base):
 
         # graph layers
         act_fn = F_ACT[self.act]
-        for conv in self.gine_conv:
-            x = act_fn(conv(x, edge_index, edge_attr))
+        for i, (conv, norm) in enumerate(zip(self.gine_conv, self.normalization)):
+            x = conv(x, edge_index, edge_attr)
+            x = norm(x)
+            x = act_fn(x)
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
@@ -733,9 +1043,20 @@ class GSAGENet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.is_fitted = False
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+        self.add_feats = add_feats
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
 
         # set graph layers
         self.sage_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
 
         # set graph layers
         graph_hidden_dim = hidden_dim
@@ -747,10 +1068,14 @@ class GSAGENet(Base):
             if x == 0:
                 self.sage_conv.append(
                     SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
+                # normalize nodes
+                self.normalization.append(nn.BatchNorm1d(hidden_dim))
                 in_channels = graph_hidden_dim  # reset in_channels
             else:
                 self.sage_conv.append(
                     SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
+                # normalize nodes
+                self.normalization.append(nn.BatchNorm1d(hidden_dim))
                 in_channels = graph_hidden_dim  # reset in_channels for loop
 
         # if a list of additional features are given, will be added to the graph latent array
@@ -787,8 +1112,10 @@ class GSAGENet(Base):
 
         # graph layers
         act_fn = F_ACT[self.act]
-        for conv in self.sage_conv:
-            x = act_fn(conv(x, edge_index))
+        for i, (conv, norm) in enumerate(zip(self.sage_conv, self.normalization)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = act_fn(x)
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
@@ -812,6 +1139,8 @@ class GSAGENet(Base):
             elif add_feats.size(0) != x.size(0):
                 raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
+            x = torch.cat([x, add_feats], dim=1)
+
         # build mlp layer
         for layer in self.mlp:
             x = layer(x)
@@ -827,7 +1156,8 @@ class GATNet(Base):
                  num_classes: int = 2, act: str = "relu", reduce_graph=False,
                  add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
         """
-
+        Generate a Graph Attention Network neural network (GATNet). The default model will generate two graph layers and
+        one mlp layer.
         :param node_dim: int
             Length of node feature vector.
         :param edge_feat_dim: Optional[int]
@@ -864,9 +1194,20 @@ class GATNet(Base):
         self.edge_feat_dim = edge_feat_dim
         self.graph_dropout = graph_dropout
         self.is_fitted = False
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+        self.add_feats = add_feats
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
 
         # set graph layers
         self.gat_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
 
         # set graph layers
         graph_hidden_dim = hidden_dim
@@ -878,10 +1219,14 @@ class GATNet(Base):
             if x == 0:
                 self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
                                              edge_dim=edge_feat_dim, dropout=graph_dropout))
+                # normalize nodes
+                self.normalization.append(nn.BatchNorm1d(hidden_dim))
                 in_channels = graph_hidden_dim  # reset in_channels
             else:
                 self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
                                              edge_dim=edge_feat_dim, dropout=graph_dropout))
+                # normalize nodes
+                self.normalization.append(nn.BatchNorm1d(hidden_dim))
                 in_channels = graph_hidden_dim  # reset in_channels for loop
 
         # if a list of additional features are given, will be added to the graph latent array
@@ -915,15 +1260,12 @@ class GATNet(Base):
         else:
             edge_attr = None
 
-        # check activation function
-        if self.act not in F_ACT:
-            raise ValueError(f"Unsupported activation function {self.act}"
-                             f"Only {list(F_ACT.keys())} are supported!")
-
         # graph layers
         act_fn = F_ACT[self.act]
-        for conv in self.gat_conv:
-            x = act_fn(conv(x, edge_index, edge_attr))
+        for i, (conv, norm) in enumerate(zip(self.gat_conv, self.normalization)):
+            x = conv(x, edge_index, edge_attr=edge_attr)
+            x = norm(x)
+            x = act_fn(x)
             x = F.dropout(x, p=self.graph_dropout, training=self.training)
 
         # readout layer
@@ -947,17 +1289,14 @@ class GATNet(Base):
             elif add_feats.size(0) != x.size(0):
                 raise ValueError(f"add_feats batch size {add_feats.size(0)} does not match x batch size {x.size(0)}")
 
+            x = torch.cat([x, add_feats], dim=1)
+
         # build mlp layer
         for layer in self.mlp:
             x = layer(x)
         x = self.final_mlp(x)
 
         return x
-
-
-# Graph Isomorphism Network
-class GINNet(nn.Module):
-    pass
 
 
 class SplineConvNet(nn.Module):
@@ -967,8 +1306,13 @@ class SplineConvNet(nn.Module):
 class MLP_Baseline(nn.Module):
     def __init__(self):
         super().__init__()
-        self.model = None
-        self.is_fitted = None
+        self.is_fitted = False
+        self.y_mean = None
+        self.y_std = None
+        self.type = None
+        self.initial_params = None
+        # info for plot
+        self.metrics = Metrics()
 
     def fit(self, x_train: Union[list, np.ndarray], y_train: Union[list, np.ndarray], x_test: Union[list, np.ndarray],
             y_test: Union[list, np.ndarray], epochs: int = 10, optimizer: str = "adam",
@@ -993,7 +1337,7 @@ class MLP_Baseline(nn.Module):
         :param criterion: str
             Set the model loss function.
         :param lr: float
-            Set hte optimizer learning rate.
+            Set the optimizer learning rate.
         :param wt_decay: float
             Reduce the calculation of weights to the loss function.
         :param batch_size: int
@@ -1015,7 +1359,8 @@ class MLP_Baseline(nn.Module):
         :return:
         """
         # set model
-        model = self.model
+        global y_mean, y_std
+        model = self
 
         # check if on the same device
         fit_device = get_device(device)
@@ -1029,12 +1374,8 @@ class MLP_Baseline(nn.Module):
         else:
             raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
 
-        if criterion in CRITERIONS.keys():
-            criterion = CRITERIONS[criterion](**kwargs)
-        elif criterion is None:
-            raise ValueError("No Criterion defined!")
-        else:
-            raise ValueError(f"Criterion not recognized! Only {list(CRITERIONS.keys())} allowed!")
+        # set criterion
+        self.criterion = _set_criterion(criterion, self.type, self.classes)
 
         # check dataset input:
         if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
@@ -1044,10 +1385,16 @@ class MLP_Baseline(nn.Module):
                                                 np.array(y_test))
 
         # convert to tensor
-        x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
-        y_train = torch.tensor(y_train, dtype=torch.long, device=fit_device)
-        x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
-        y_test = torch.tensor(y_test, dtype=torch.long, device=fit_device)
+        if self.type == "Classification":
+            x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
+            y_train = torch.tensor(y_train, dtype=torch.long, device=fit_device)
+            x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
+            y_test = torch.tensor(y_test, dtype=torch.long, device=fit_device)
+        elif self.type == "Regression":
+            x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
+            y_train = torch.tensor(y_train, dtype=torch.float32, device=fit_device)
+            x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
+            y_test = torch.tensor(y_test, dtype=torch.float32, device=fit_device)
 
         # wrap tensors into a Dataset
         train_dataset = TensorDataset(x_train, y_train)
@@ -1067,55 +1414,115 @@ class MLP_Baseline(nn.Module):
         elif estop is not None and isinstance(estop, int):
             estop = EarlyStopping(monitor='val_loss', patience=estop, mode='min')
 
-        for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
-            # pass MLP class instance (self)
-            train_loss, train_acc, train_prec = train_mlp(self, train_loader, optimizer, criterion, fit_device)
-            test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_mlp(self, test_loader, criterion,
-                                                                                fit_device)
+        # classification
+        if isinstance(self.classes, int) and self.classes > 1:  # classification
+            for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
+                train_loss, train_acc, train_prec = train_mlp_c(self, train_loader, optimizer, self.criterion,
+                                                                fit_device)
+                test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_mlp_c(self, test_loader, self.criterion,
+                                                                                      fit_device)
 
-            # add metrics
-            self.train_loss.append(train_loss)
-            self.test_loss.append(test_loss)
-            self.train_accuracy.append(train_acc)
-            self.test_accuracy.append(test_acc)
-            self.train_precision.append(train_prec)
-            self.test_precision.append(test_prec)
-            self.mcc.append(mcc)
-            self.recall.append(recall)
-            self.f1_score.append(f1)
-            self.roc_auc.append(roc_auc)
+                self.metrics.train_loss.append(train_loss)
+                self.metrics.test_loss.append(test_loss)
+                self.metrics.train_accuracy.append(train_acc)
+                self.metrics.test_accuracy.append(test_acc)
+                self.metrics.train_precision.append(train_prec)
+                self.metrics.test_precision.append(test_prec)
+                self.metrics.mcc.append(mcc)
+                self.metrics.recall.append(recall)
+                self.metrics.f1_score.append(f1)
+                self.metrics.roc_auc.append(roc_auc)
 
-            if verbose:
-                print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
-                      f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
+                if verbose:
+                    print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+                          f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
-            # early stopping
-            if estop is not None:
-                # determine monitoring metric
-                if estop.monitor == "val_loss":
-                    monitor = test_loss
-                elif estop.monitor == "val_acc":
-                    monitor = test_acc
-                else:
-                    raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
+                # early stopping
+                if estop is not None:
+                    # determine monitoring metric
+                    if estop.monitor == "val_loss":
+                        monitor = test_loss
+                    elif estop.monitor == "val_acc":
+                        monitor = test_acc
+                    else:
+                        raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
 
-                estop(monitor)
+                    estop(monitor)
 
-                if estop.early_stop:
-                    print(f"Early stopping triggered after {epoch + 1} epochs!")
-                    break
+                    if estop.early_stop:
+                        print(f"Early stopping triggered after {epoch + 1} epochs!")
+                        break
+        # regression
+        elif self.classes == 1 or self.classes is None:
+            # for scaling, collect all y labels
+            all_y_list = []
+            for _, y_batch in train_loader:
+                all_y_list.append(y_batch)
+            all_y = torch.cat(all_y_list) if all_y_list else None
+
+            y_mean = torch.mean(all_y.float())
+            y_std = torch.std(all_y.float())
+            if y_std == 0: y_std = 1.0
+
+            for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
+                train_loss, train_mae, train_rmse, train_r2 = train_mlp_r(model, train_loader, optimizer,
+                                                                          self.criterion, fit_device, y_mean, y_std)
+                test_loss, test_mae, test_rmse, test_r2 = test_mlp_r(model, test_loader, self.criterion, fit_device,
+                                                                     y_mean, y_std)
+                # add metrics
+                self.metrics.train_loss.append(train_loss)
+                self.metrics.test_loss.append(test_loss)
+                self.metrics.train_mae.append(train_mae)
+                self.metrics.test_mae.append(test_mae)
+                self.metrics.train_rmse.append(train_rmse)
+                self.metrics.test_rmse.append(test_rmse)
+                self.metrics.train_r2.append(train_r2)
+                self.metrics.test_r2.append(test_r2)
+
+                if verbose:
+                    print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train R2: {train_r2:.4f} | "
+                          f"Test Loss: {test_loss:.4f} | Test R2: {test_r2:.4f}")
+
+                # early stopping
+                if estop is not None:
+                    # determine monitoring metric
+                    if estop.monitor == "val_loss":
+                        monitor = test_loss
+                    else:
+                        raise ValueError("Only 'val_loss' monitors allowed!")
+
+                    estop(monitor)
+
+                    if estop.early_stop:
+                        print(f"Early stopping triggered after {epoch + 1} epochs!")
+                        break
+        # to unstandardize predictions
+        if self.classes == 1 or self.classes is None:
+            self.y_mean = y_mean
+            self.y_std = y_std
 
         # var for cross validation
         self.is_fitted = True
 
+        # get epoch
+        best_train_epoch = np.argmin(self.metrics.train_loss)
+        best_test_epoch = np.argmin(self.metrics.test_loss)
+        self.metrics.best_epoch = best_test_epoch.item()  # convert from np to int
+
         if device_warn:
-            print(f"Average Training Loss: {round(np.mean(self.train_loss), 3)}")
-            print(f"Average Test Loss: {round(np.mean(self.test_loss), 3)}")
-            print(f"Average Training Accuracy: {round(np.mean(self.train_accuracy), 3)}")
-            print(f"Average Test Accuracy: {round(np.mean(self.test_accuracy), 3)}")
+            if isinstance(self.classes, int) and self.classes > 1:  # classification
+                print(f"Best Training Loss: {round(self.metrics.train_loss[best_train_epoch], 3)}")
+                print(f"Best Test Loss: {round(self.metrics.test_loss[best_test_epoch], 3)}")
+                print(f"Best Training Accuracy: {round(self.metrics.train_accuracy[best_train_epoch], 3)}")
+                print(f"Best Test Accuracy: {round(self.metrics.test_accuracy[best_test_epoch], 3)}")
+            else:
+                print(f"Best Training Loss: {round(self.metrics.train_loss[best_train_epoch], 3)}")
+                print(f"Best Test Loss: {round(self.metrics.test_loss[best_test_epoch], 3)}")
+                print(f"Best Training MAE: {round(self.metrics.train_mae[best_train_epoch], 3)}")
+                print(f"Best Test MAE: {round(self.metrics.test_mae[best_test_epoch], 3)}")
 
     def predict(self, data: Union[np.ndarray, list], device: str = "auto", binary: Union[bool, float, str] = True,
-                return_type: str = "list"):
+                cutoff: float = 0.5, return_type: str = "list"):
         """
         Handle predictions for an input torch Dataloader.
         :param data: Union[np.array, list]
@@ -1127,6 +1534,9 @@ class MLP_Baseline(nn.Module):
             be binary or multi-class predictions. If a float is given, then a binary predictions will be given with the
             input float used as the cutoff for positive (1) labels. Input strings can be "multi" or "proba", where
             "multi" will output a multi-class labels and "proba" will output a binary probability vector.
+        :param cutoff: float
+            Set the cutoff for binary predictions. This param is only available for binary models and when the binary
+            param is set to 'True'.
         :param return_type: str
             Set the return type of the prediction. Can be "tensor" or "list".
         :return:
@@ -1156,30 +1566,48 @@ class MLP_Baseline(nn.Module):
         all_preds = []
         with torch.no_grad():  # disable gradient calculation
             output = model(data)
-            # set for binary, multi-class, or probability output
-            if binary == True or isinstance(binary, float):
-                proba = F.softmax(output, dim=1)[:, 1]
-                if isinstance(binary, float):
-                    proba = (proba > binary).long()
+            # regression output
+            if self.type == "Regression":
+                # regression gets raw output, no softmax/thresholding
+                pred_out = output
+            # classification output
+            elif self.type == "Classification":
+                # binary labels
+                if binary == True:
+                    # grab positive class proba (index 1)
+                    proba = F.softmax(output, dim=1)[:, 1]
+                    pred_out = (proba >= cutoff).int()
+                elif binary is False or binary is None:
+                    # grab positive class proba (index 1)
+                    pred_out = F.softmax(output, dim=1)[:, 1]
+                # multi-class classification
+                elif binary == "multi":
+                    pred_out = F.argmax(output, dim=1)
+                # probabilities in float
+                elif binary == "proba":
+                    pred_out = F.softmax(output, dim=1)
                 else:
-                    proba = (proba >= 0.5).long()
-            # multi-class classification
-            elif binary == False or binary == "multi":
-                proba = F.softmax(output, dim=1)
-                proba = torch.argmax(proba, dim=1)
-            # output probabilities
-            elif binary == "proba":
-                proba = F.softmax(output, dim=1)
+                    raise ValueError("Only 'multi', 'proba', or 'boolean', is supported!!")
             else:
-                raise ValueError("Only 'multi', 'proba', boolean, or float is supported!!")
-            all_preds.append(proba)
+                raise ValueError("Model is not labeled as type 'Regression' or 'Classification'?")
 
-            # conditional check to output as list or tensor
+            all_preds.append(pred_out)
+
+        # combine predictions from batch, concact and extract mx array
+        if self.type == "Regression":
+            predictions = torch.cat(all_preds)
+            if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
+                predictions = predictions * self.y_std + self.y_mean
+        else:
+            predictions = torch.cat(all_preds)
+
+        # conditional check to output as list or tensor
         if return_type == "list":
-            prediction = torch.cat(all_preds)
-            return prediction.tolist()
+            return predictions.tolist()
         elif return_type == "tensor":
-            return torch.cat(all_preds)
+            return predictions
+        elif return_type == "array":
+            return predictions.cpu().numpy()
         else:
             raise TypeError(f"Type {return_type} not recognized!")
 
@@ -1208,6 +1636,7 @@ class MLP_Baseline(nn.Module):
         model = self
         # load model and set to eval mode
         model.load_state_dict(torch.load(model_path, map_location=device))
+        model.is_fitted = True
         model.eval()
 
         print("Model loaded!")
@@ -1232,17 +1661,26 @@ class MLP(MLP_Baseline):
             If set to true, each subsequent hidden layers will be halved.
         :param act: str
             Set teh non-linear activation function. Defaults to "relu".
-        :param pooling:
         """
         super().__init__()
         self.act = act
         self.dropout = dropout
         self.is_fitted = False
+        self.criterion = None
+        if num_classes == 1:
+            num_classes = None
+        self.classes = num_classes
+
+        # set model type
+        if isinstance(self.classes, int) and self.classes > 1:
+            self.type = "Classification"
+        elif self.classes == 1 or self.classes is None:
+            self.type = "Regression"
 
         # set dimension of mlp layers
         self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
 
-        # info for plot
+        # info for plot, needed for top level attribute
         self.train_loss = []
         self.test_loss = []
         self.train_accuracy = []
@@ -1280,15 +1718,18 @@ class MLP(MLP_Baseline):
             ))
             dimension = hidden_size
             layer_num += 1
+
         # final mlpl layer
+        if num_classes is None:
+            num_classes = 1
         model_layers.append(nn.Linear(dimension, num_classes))
 
         return model_layers
 
 
 # train/test for MLP model
-def train_mlp(model, train_loader, optimizer, criterion, device):
-    """Support function for training the torch model"""
+def train_mlp_c(model, train_loader, optimizer, criterion, device):
+    """Support function for training the torch mlp model"""
     model.train()
     total_loss = 0
     correct = 0
@@ -1303,14 +1744,6 @@ def train_mlp(model, train_loader, optimizer, criterion, device):
 
         # forward pass
         out = model(data)
-
-        # # todo ass if/else to classify regression or classification
-        # # create a dictionary to sort through?
-        # if criterion is a regression:
-        #     targets = targets.view(-1, 1).float()
-        #     loss = criterion(outputs, targets)
-        # elif tast is classification
-        #     loss = criterion(outputs, targets.long())
 
         loss = criterion(out, y)
         loss.backward()
@@ -1339,8 +1772,8 @@ def train_mlp(model, train_loader, optimizer, criterion, device):
 
 
 @torch.no_grad()
-def test_mlp(model, test_loader, criterion, device):
-    """Support function for testing the torch model"""
+def test_mlp_c(model, test_loader, criterion, device):
+    """Support function for testing the torch mlp model"""
     global mcc, recall, f1, roc_auc
     model.eval()
     total_loss = 0
@@ -1387,9 +1820,106 @@ def test_mlp(model, test_loader, criterion, device):
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
 
 
+def train_mlp_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
+    """Support function for training the torch mlp model"""
+    model.train()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+
+    for data, y in train_loader:
+        data = data.to(device)
+        # standardize input
+        y = (y - y_mean) / y_std
+        y = y.view(-1, 1)  # ensure same shape
+        y = y.to(device)
+
+        # forward pass
+        out = model(data)
+        optimizer.zero_grad()
+
+        loss = criterion(out, y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        # all prediction labels
+        all_preds.append(out.detach())
+        all_labels.append(y.detach())
+
+    # combine metrics
+    predictions = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+
+    # unscale predictions
+    all_preds = predictions * y_std + y_mean
+    all_labels = all_labels * y_std + y_mean
+
+    # average loss
+    train_loss = total_loss / len(train_loader)
+
+    # mean absolute error
+    train_mae = mean_absolute_error(all_labels, all_preds)
+
+    # root mean squared error
+    train_rmse = mean_squared_error(all_labels, all_preds)
+
+    # r-squared
+    train_r2 = r2_score(all_labels, all_preds)
+
+    return train_loss, train_mae, train_rmse, train_r2
+
+
+@torch.no_grad()
+def test_mlp_r(model, test_loader, criterion, device, y_mean, y_std):
+    """Support function for testing the torch mlp model"""
+    global mcc, recall, f1, roc_auc
+    model.eval()
+    total_loss = 0
+    predictions = []
+    all_labels = []
+
+    for data, y in test_loader:
+        data = data.to(device)
+        # standardize input
+        y = (y - y_mean) / y_std
+        y = y.view(-1, 1)  # ensure same shape
+        y = y.to(device)
+
+        # forward pass
+        out = model(data)
+
+        loss = criterion(out, y)
+        total_loss += loss.item()
+        # all prediction labels
+        predictions.append(out.detach())
+        all_labels.append(y.detach())
+
+    # precision values
+    predictions = torch.cat(predictions).cpu()
+    all_labels = torch.cat(all_labels).cpu()
+
+    # unscale predictions
+    all_preds = predictions * y_std + y_mean
+    all_labels = all_labels * y_std + y_mean
+
+    # average loss
+    test_loss = total_loss / len(test_loader)
+
+    # mean absolute error
+    test_mae = mean_absolute_error(all_labels, all_preds)
+
+    # root mean squared error
+    test_rmse = mean_squared_error(all_labels, all_preds)
+
+    # r-squared
+    test_r2 = r2_score(all_labels, all_preds)
+
+    return test_loss, test_mae, test_rmse, test_r2
+
+
 # train/test for graph models
-def train(model, train_loader, optimizer, criterion, device):
-    """Support function for training the torch model"""
+def train_c(model, train_loader, optimizer, criterion, device):
+    """Support function for training a classification model"""
     model.train()
     total_loss = 0
     correct = 0
@@ -1434,8 +1964,8 @@ def train(model, train_loader, optimizer, criterion, device):
 
 
 @torch.no_grad()
-def test(model, test_loader, criterion, device):
-    """Support function for testing the torch model"""
+def test_c(model, test_loader, criterion, device):
+    """Support function for testing a classification model"""
     global mcc, recall, f1, roc_auc
     model.eval()
     total_loss = 0
@@ -1484,6 +2014,100 @@ def test(model, test_loader, criterion, device):
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
 
 
+def train_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
+    """Support function for training a regression model"""
+    model.train()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+
+    for data in train_loader:
+        # standardize input
+        data.y = (data.y - y_mean) / y_std
+        data.y = data.y.view(-1, 1)  # ensure same shape
+        data = data.to(device)
+
+        # forward pass
+        out = model(data)
+        optimizer.zero_grad()
+
+        loss = criterion(out, data.y)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+        # all prediction labels
+        all_preds.append(out.detach())
+        all_labels.append(data.y.detach())
+
+    # combine metrics
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+
+    # unscale predictions
+    all_preds = all_preds * y_std + y_mean
+    all_labels = all_labels * y_std + y_mean
+
+    # average loss
+    train_loss = total_loss / len(train_loader)
+
+    # mean absolute error
+    train_mae = mean_absolute_error(all_labels, all_preds)
+
+    # root mean squared error
+    train_rmse = mean_squared_error(all_labels, all_preds)
+
+    # r-squared
+    train_r2 = r2_score(all_labels, all_preds)
+
+    return train_loss, train_mae, train_rmse, train_r2
+
+
+@torch.no_grad()
+def test_r(model, test_loader, criterion, device, y_mean, y_std):
+    """Support function for testing a regression model"""
+    model.eval()
+    total_loss = 0
+    predictions = []
+    all_labels = []
+
+    for data in test_loader:
+        # standardize output
+        data.y = (data.y - y_mean) / y_std
+        data.y = data.y.view(-1, 1)  # ensure same shape
+        data = data.to(device)
+
+        # forward pass
+        out = model(data)
+
+        loss = criterion(out, data.y)
+        total_loss += loss.item()
+        # all prediction labels
+        predictions.append(out.detach())
+        all_labels.append(data.y.detach())
+
+    # combine metrics
+    all_preds = torch.cat(predictions).cpu()
+    all_labels = torch.cat(all_labels).cpu()
+
+    # unscale predictions
+    all_preds = all_preds * y_std + y_mean
+    all_labels = all_labels * y_std + y_mean
+
+    # average loss
+    test_loss = total_loss / len(test_loader)
+
+    # mean absolute error
+    test_mae = mean_absolute_error(all_labels, all_preds)
+
+    # root mean squared error
+    test_rmse = mean_squared_error(all_labels, all_preds)
+
+    # r-squared
+    test_r2 = r2_score(all_labels, all_preds)
+
+    return test_loss, test_mae, test_rmse, test_r2
+
+
 def _global_pooling(x, batch, pool_type='add'):
     if pool_type == 'add':
         return global_add_pool(x, batch)
@@ -1493,6 +2117,29 @@ def _global_pooling(x, batch, pool_type='add'):
         return global_max_pool(x, batch)
     else:
         raise ValueError(f"Unknown pool_type: {pool_type}")
+
+
+# support function to set criterion
+def _set_criterion(criterion, task_type, num_classes):
+    if criterion is None:
+        raise ValueError("No criterion defined!")
+
+    # define by model type
+    if task_type == "Classification":
+        pulled_criterion = TORCH_CLASSIFICATION
+    elif task_type == "Regression":
+        pulled_criterion = TORCH_REGRESSION
+    else:
+        raise ValueError("Task type must be 'Classification' or 'Regression'.")
+
+    # get loss function
+    if isinstance(criterion, str):
+        if criterion not in pulled_criterion:
+            raise ValueError(
+                f"Criterion '{criterion}' not supported for task type '{task_type}'. Check 'num_classes' or 'criterion' params!")
+        criterion = pulled_criterion[criterion]
+
+    return criterion
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import random
 import torch
+import subprocess
 import numpy as np
 from typing import Optional, Union
 import torch.nn.functional as F
@@ -24,22 +25,28 @@ OPTIMIZERS = {
     "adamax": torch.optim.Adamax,
 }
 
-CRITERIONS = {
+TORCH_CLASSIFICATION = {
     # Classification
-    "cross_entropy": torch.nn.CrossEntropyLoss,
-    "bce_with_logits": torch.nn.BCEWithLogitsLoss,
-    "nll": torch.nn.NLLLoss,
-    "poisson": torch.nn.PoissonNLLLoss,
-    "kl_divergence": torch.nn.KLDivLoss,
-    # Regression
-    "mse": torch.nn.MSELoss,
-    "l1": torch.nn.L1Loss,
-    "smooth_l1": torch.nn.SmoothL1Loss,
-    "huber": torch.nn.HuberLoss,
-    # Others
-    "cosine_embedding": torch.nn.CosineEmbeddingLoss,
-    "triplet_margin": torch.nn.TripletMarginLoss,
+    "cross_entropy": torch.nn.CrossEntropyLoss(),
+    "bce_with_logits": torch.nn.BCEWithLogitsLoss(),
+    "nll": torch.nn.NLLLoss(),
+    "poisson": torch.nn.PoissonNLLLoss(),
+    "kl_divergence": torch.nn.KLDivLoss(),
 }
+
+TORCH_REGRESSION = {
+# Regression
+    "mse": torch.nn.MSELoss(),
+    "l1": torch.nn.L1Loss(),
+    "smooth_l1": torch.nn.SmoothL1Loss(),
+    "huber": torch.nn.HuberLoss(),
+    # Others
+    # "cosine_embedding": torch.nn.CosineEmbeddingLoss(),
+    # "triplet_margin": torch.nn.TripletMarginLoss(),
+}
+
+# combine criterion dict
+TORCH_CRITERIONS = {**TORCH_CLASSIFICATION, **TORCH_REGRESSION}
 
 F_ACT = {
     "relu": F.relu,
@@ -77,7 +84,9 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
         raise TypeError(
             "Only 'AtomGraph', 'PharmacophoreGraph', 'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph' are supported!!")
 
-    node = torch.tensor(np.array(graph.node_features), dtype=torch.float)
+    # convert to np.array() first then to torch.tensor
+    node_np = np.array(graph.node_features)
+    node = torch.tensor(node_np, dtype=torch.float)
     # convert node features into a vector for GNN
     if node.ndim == 1:
         node = node.unsqueeze(1)
@@ -92,7 +101,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
         edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
 
     # bond features
-    bond = graph.edge_features
+    bond = np.array(graph.edge_features)
     # if single atom
     if len(bond) == 0:
         bond = torch.empty((0, 16), dtype=torch.float)  # replace 16 with your edge_dim
@@ -104,7 +113,10 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
     smiles = graph.smi
 
     if label is not None:
-        y = torch.tensor([label], dtype=torch.long)
+        if isinstance(label, int):
+            y = torch.tensor([label], dtype=torch.long)
+        elif isinstance(label, float):
+            y = torch.tensor([label], dtype=torch.float32)
     else:
         y = None
 
@@ -112,7 +124,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles, add_feats=add_feats)
     elif add_smi:
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles)
-    elif add_feats:
+    elif add_feats is not None:
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, add_feats=add_feats)
     else:
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y)
@@ -150,6 +162,12 @@ def check_gpu():
         print("MPS (Metal Performance Shaders) is available. Device: Apple GPU")
     else:
         print("Only CPU is available. Check CUDA configurations!")
+
+
+def state_apple_silicon_device():
+    output = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
+                            capture_output=True, text=True)
+    return output.stdout.strip()
 
 
 # set seed for pytorch, numpy and python

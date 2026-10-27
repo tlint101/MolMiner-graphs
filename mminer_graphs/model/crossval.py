@@ -55,9 +55,9 @@ class CrossVal:
     def get_cv_scores(self, model: Optional[nn.Module] = None, graph_type: str = "AtomGraph",
                       dataset: Optional[pd.DataFrame] = None, labels: str = "CV", cv: int = 1, smi_col=None,
                       activity_col=None, add_feats: Optional[np.array] = None, batch_size: int = 32, epochs: int = 10,
-                      optimizer: str = "adam", lr: float = 0.01, wt_decay: float = 0.0, device: str = "auto",
-                      drop_last: bool = False, verbose: bool = False, device_warn: bool = True, pbar: bool = True,
-                      seed: int = 42):
+                      optimizer: str = "adam", lr: float = 0.01, wt_decay: float = 0.0,
+                      criterion: str = "cross_entropy", device: str = "auto", drop_last: bool = False,
+                      verbose: bool = False, device_warn: bool = True, pbar: bool = True, seed: int = 42):
         """
         Loop a given nn.Module model to get the average cv scores. Dataset should be given as a pd.DataFrame with a
         format found in mol-miner. The output will be a dictionary containing mole metrics as a list and an average over
@@ -91,6 +91,8 @@ class CrossVal:
             Set the optimizer learning rate.
         :param wt_decay: float
             Reduce the calculation of weights to the loss function.
+        :param criterion: str
+            Set the loss criterion.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :param drop_last: bool
@@ -117,13 +119,20 @@ class CrossVal:
         cv_index = self.get_cv_split(dataset, labels, cv)
         data = dataset[[smi_col, activity_col]]
 
-        loss_list = []
-        acc_list = []
-        prec_list = []
-        mcc_list = []
-        recall_list = []
-        f1_list = []
-        roc_auc_list = []
+        # hold scores
+        if model.type == "Classification":
+            loss_list = []
+            acc_list = []
+            prec_list = []
+            mcc_list = []
+            recall_list = []
+            f1_list = []
+            roc_auc_list = []
+        elif model.type == "Regression":
+            loss_list = []
+            r2_list = []
+            mae_list = []
+            rmse_list = []
 
         # extract by index
         for x in tqdm(range(len(cv_index)), desc="CV Round", disable=not pbar):
@@ -160,26 +169,42 @@ class CrossVal:
             if model.is_fitted:
                 model.reset_params()
 
-            model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device,
-                      estop=estop, lr=lr, wt_decay=wt_decay, pbar=False, verbose=verbose,
-                      device_warn=device_warn)
+            model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device, estop=estop, lr=lr,
+                      wt_decay=wt_decay, pbar=False, verbose=verbose, criterion=criterion, device_warn=device_warn)
 
             # scores
-            loss_list.append(round(float(np.mean(model.test_loss)), 3))
-            acc_list.append(round(float(np.mean(model.test_accuracy)), 3))
-            prec_list.append(round(float(np.mean(model.test_precision)), 3))
-            mcc_list.append(round(float(np.mean(model.mcc)), 3))
-            recall_list.append(round(float(np.mean(model.recall)), 3))
-            f1_list.append(round(float(np.mean(model.f1_score)), 3))
-            roc_auc_list.append(round(float(np.mean(model.roc_auc)), 3))
+            best_test_epoch = np.argmin(model.metrics.test_loss)
+            if model.type == "Classification":
+                loss_list.append(round(float(model.metrics.test_loss[best_test_epoch]), 3))
+                acc_list.append(round(float(model.metrics.test_accuracy[best_test_epoch]), 3))
+                prec_list.append(round(float(model.metrics.test_precision[best_test_epoch]), 3))
+                mcc_list.append(round(float(model.metrics.mcc[best_test_epoch]), 3))
+                recall_list.append(round(float(model.metrics.recall[best_test_epoch]), 3))
+                f1_list.append(round(float(model.metrics.f1_score[best_test_epoch]), 3))
+                roc_auc_list.append(round(float(model.metrics.roc_auc[best_test_epoch]), 3))
+            elif model.type == "Regression":
+                loss_list.append(round(float(model.metrics.test_loss[best_test_epoch]), 3))
+                r2_list.append(round(float(model.metrics.test_r2[best_test_epoch]), 3))
+                mae_list.append(round(float(model.metrics.test_mae[best_test_epoch]), 3))
+                rmse_list.append(round(float(model.metrics.test_rmse[best_test_epoch]), 3))
 
         # convert metrics into a pd.DataFrame
-        metrics = {'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list, 'F1': f1_list, 'MCC': mcc_list,
-                   'ROC_AUC': roc_auc_list, 'Accuracy_ave': round(np.mean(acc_list), 3),
-                   'Precision_ave': round(np.mean(prec_list), 3), 'Recall_avg': round(np.mean(recall_list), 3),
-                   'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
-                   'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
-                   'Loss_ave': round(np.mean(loss_list), 3), }
+        if model.type == "Classification":
+            metrics = {'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list, 'F1': f1_list,
+                       'MCC': mcc_list,
+                       'ROC_AUC': roc_auc_list, 'Accuracy_ave': round(np.mean(acc_list), 3),
+                       'Precision_ave': round(np.mean(prec_list), 3),
+                       'Recall_avg': round(np.mean(recall_list), 3),
+                       'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
+                       'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
+                       'Loss_ave': round(np.mean(loss_list), 3), }
+        elif model.type == "Regression":
+            metrics = {'r2': r2_list, 'MAE': mae_list, 'RMSE': rmse_list, 'r2_ave': round(np.mean(r2_list), 3),
+                       'MAE_ave': round(np.mean(mae_list), 3), 'RMSE': round(np.mean(rmse_list), 3),
+                       'Loss': loss_list, 'Loss_ave': round(np.mean(loss_list), 3), }
+        else:
+            raise ValueError("Issue with model.type!")
+
         metrics_df = pd.DataFrame([metrics])
 
         return metrics_df
