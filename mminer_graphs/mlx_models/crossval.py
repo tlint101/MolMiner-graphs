@@ -7,6 +7,7 @@ import mlx.nn
 import mlx.core as mx
 from mlx_graphs.loaders import Dataloader
 from mminer_graphs.mlx_models import MolToGraph, EarlyStopping
+from mminer_graphs.mlx_models.mlx_modeling import Metrics
 from mminer_graphs.mlx_models.mlx_utils import set_seed
 from typing import Optional, Union
 
@@ -15,6 +16,7 @@ class CrossVal:
     def __init__(self, model: mlx.nn.Module, dataset: pd.DataFrame, estop: Optional[Union[EarlyStopping, int]] = None):
         self.model = model
         self.dataset = dataset
+        self.summary = None
         if estop is None:
             estop = 100
             warnings.warn('estop not specified! Will default to 100 epochs!')
@@ -104,9 +106,9 @@ class CrossVal:
             Whether ot output a progress bar for each cross validation fold.
         :param seed: int
             Set the seed for the model.
-        :return: dict
-            A dictionary containing a list of metrics and average metrics. The dictionary can be fed into a
-            pd.DataFrame.
+        :return: pd.DataFrame
+            A pd.DataFrame with one row per cv fold and one column per metric. The mean and std of each metric are
+            stored separately in self.summary.
         """
         global loss_list, acc_list, prec_list, mcc_list, recall_list, f1_list, roc_auc_list, r2_list, mae_list, rmse_list, train_graphs, test_graphs
         if dataset is None:
@@ -177,8 +179,6 @@ class CrossVal:
 
             # set model
             estop = self.early_stopping
-            if x > 0:
-                estop.reset()
 
             # confirm model fit during cv cycles
             if x == 0:
@@ -192,42 +192,40 @@ class CrossVal:
             # from mminer_graphs.mlx_models import summary
             # print(summary(model))
 
+            # clear metrics so best epoch is picked from this fold only
+            model.metrics = Metrics()
+
             model.fit(train_loader, test_loader, epochs=epochs, optimizer=optimizer, device=device, estop=estop, lr=lr,
                       wt_decay=wt_decay, pbar=False, verbose=verbose, criterion=criterion, device_warn=device_warn)
 
             # scores
             best_test_epoch = np.argmin(model.metrics.test_loss)
             if model.type == "Classification":
-                loss_list.append(model.metrics.test_loss[best_test_epoch])
-                acc_list.append(model.metrics.test_accuracy[best_test_epoch])
-                prec_list.append(model.metrics.test_precision[best_test_epoch])
-                mcc_list.append(model.metrics.mcc[best_test_epoch])
-                recall_list.append(model.metrics.recall[best_test_epoch])
-                f1_list.append(model.metrics.f1_score[best_test_epoch])
-                roc_auc_list.append(model.metrics.roc_auc[best_test_epoch])
+                loss_list.append(float(model.metrics.test_loss[best_test_epoch]))
+                acc_list.append(float(model.metrics.test_accuracy[best_test_epoch]))
+                prec_list.append(float(model.metrics.test_precision[best_test_epoch]))
+                mcc_list.append(float(model.metrics.mcc[best_test_epoch]))
+                recall_list.append(float(model.metrics.recall[best_test_epoch]))
+                f1_list.append(float(model.metrics.f1_score[best_test_epoch]))
+                roc_auc_list.append(float(model.metrics.roc_auc[best_test_epoch]))
             elif model.type == "Regression":
-                loss_list.append(model.metrics.test_loss[best_test_epoch])
-                r2_list.append(model.metrics.test_r2[best_test_epoch])
-                mae_list.append(model.metrics.test_mae[best_test_epoch])
-                rmse_list.append(model.metrics.test_rmse[best_test_epoch])
+                loss_list.append(float(model.metrics.test_loss[best_test_epoch]))
+                r2_list.append(float(model.metrics.test_r2[best_test_epoch]))
+                mae_list.append(float(model.metrics.test_mae[best_test_epoch]))
+                rmse_list.append(float(model.metrics.test_rmse[best_test_epoch]))
 
         # convert metrics into a pd.DataFrame
         if model.type == "Classification":
-            metrics = {'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list, 'F1': f1_list,
-                       'MCC': mcc_list,
-                       'ROC_AUC': roc_auc_list, 'Accuracy_ave': round(np.mean(acc_list), 3),
-                       'Precision_ave': round(np.mean(prec_list), 3), 'Recall_avg': round(np.mean(recall_list), 3),
-                       'F1 Score_avg': round(np.mean(f1_list), 3), 'MCC_avg': round(np.mean(mcc_list), 3),
-                       'ROC_AUC_avg': round(np.mean(roc_auc_list), 3), 'Loss': loss_list,
-                       'Loss_ave': round(np.mean(loss_list), 3), }
+            metrics_df = pd.DataFrame({'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list,
+                                       'F1': f1_list, 'MCC': mcc_list, 'ROC_AUC': roc_auc_list, 'Loss': loss_list})
         elif model.type == "Regression":
-            metrics = {'r2': r2_list, 'MAE': mae_list, 'RMSE': rmse_list, 'r2_ave': round(np.mean(r2_list), 3),
-                       'MAE_ave': round(np.mean(mae_list), 3), 'RMSE': round(np.mean(rmse_list), 3),
-                       'Loss': loss_list, 'Loss_ave': round(np.mean(loss_list), 3), }
+            metrics_df = pd.DataFrame({'r2': r2_list, 'MAE': mae_list, 'RMSE': rmse_list, 'Loss': loss_list})
         else:
             raise ValueError("Issue with model.type!")
+        metrics_df.index.name = 'fold'
 
-        metrics_df = pd.DataFrame([metrics])
+        # summary kept separate so metrics_df stays clean for downstream stats
+        self.summary = metrics_df.agg(['mean', 'std']).round(3)
 
         return metrics_df
 
