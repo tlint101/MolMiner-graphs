@@ -2184,8 +2184,9 @@ def _torch_to_mlx(graph):
                 mlx_dict[attr] = mx.array(attr_value, dtype=mx.int32)
             else:
                 mlx_dict[attr] = mx.array(attr_value, dtype=mx.float32)
+            # flatten [1, features] tensor from mol_to_graph to keep mlx graphs unchanged
             if attr == 'add_feats':
-                mlx_dict[attr] = mx.array(attr_value, dtype=mx.float32)
+                mlx_dict[attr] = mx.array(attr_value.reshape(-1), dtype=mx.float32)
                 add_feats = 1
             else:
                 pass

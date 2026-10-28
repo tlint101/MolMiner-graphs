@@ -120,7 +120,11 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
     else:
         y = None
 
-    if add_smi and add_feats:
+    # for additional feats,  store as [1, features] tensor for DataLoader to stack batches [batch, features]
+    if add_feats is not None:
+        add_feats = torch.tensor(np.asarray(add_feats), dtype=torch.float32).reshape(1, -1)
+
+    if add_smi and add_feats is not None:
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles, add_feats=add_feats)
     elif add_smi:
         return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles)
