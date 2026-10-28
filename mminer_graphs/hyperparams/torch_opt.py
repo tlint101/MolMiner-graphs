@@ -344,9 +344,9 @@ class Torch_opt(Optimization):
                                      device=device, pbar=False, device_warn=False)
 
         # average metrics
-        acc = np.mean([x for sub in metrics['Accuracy'] for x in sub])
-        prec = np.mean([x for sub in metrics['Precision'] for x in sub])
-        loss = np.mean([x for sub in metrics['Loss'] for x in sub])
+        acc = metrics['Accuracy'].mean()
+        prec = metrics['Precision'].mean()
+        loss = metrics['Loss'].mean()
 
         # convert loss from 0 to 1 scale
         n_loss = 1 / (1 + loss)
