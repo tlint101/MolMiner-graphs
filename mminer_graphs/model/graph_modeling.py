@@ -126,6 +126,8 @@ class EarlyStopping:
         """
         self.trigger_times = 0
         self.early_stop = False
+        # reset best score so each new fit is scored independently
+        self.best_score = float('inf') if self.mode == 'min' else -float('inf')
 
     def __call__(self, current_score):
         if self.monitor_op(current_score, self.best_score):
