@@ -121,7 +121,7 @@ class CrossVal:
         data = dataset[[smi_col, activity_col]]
 
         # hold scores
-        if model.type == "Classification":
+        if model.task == "Classification":
             loss_list = []
             acc_list = []
             prec_list = []
@@ -129,7 +129,7 @@ class CrossVal:
             recall_list = []
             f1_list = []
             roc_auc_list = []
-        elif model.type == "Regression":
+        elif model.task == "Regression":
             loss_list = []
             r2_list = []
             mae_list = []
@@ -200,7 +200,7 @@ class CrossVal:
 
             # scores
             best_test_epoch = np.argmin(model.metrics.test_loss)
-            if model.type == "Classification":
+            if model.task == "Classification":
                 loss_list.append(float(model.metrics.test_loss[best_test_epoch]))
                 acc_list.append(float(model.metrics.test_accuracy[best_test_epoch]))
                 prec_list.append(float(model.metrics.test_precision[best_test_epoch]))
@@ -208,20 +208,20 @@ class CrossVal:
                 recall_list.append(float(model.metrics.recall[best_test_epoch]))
                 f1_list.append(float(model.metrics.f1_score[best_test_epoch]))
                 roc_auc_list.append(float(model.metrics.roc_auc[best_test_epoch]))
-            elif model.type == "Regression":
+            elif model.task == "Regression":
                 loss_list.append(float(model.metrics.test_loss[best_test_epoch]))
                 r2_list.append(float(model.metrics.test_r2[best_test_epoch]))
                 mae_list.append(float(model.metrics.test_mae[best_test_epoch]))
                 rmse_list.append(float(model.metrics.test_rmse[best_test_epoch]))
 
         # convert metrics into a pd.DataFrame
-        if model.type == "Classification":
+        if model.task == "Classification":
             metrics_df = pd.DataFrame({'Accuracy': acc_list, 'Precision': prec_list, 'Recall': recall_list,
                                        'F1': f1_list, 'MCC': mcc_list, 'ROC_AUC': roc_auc_list, 'Loss': loss_list})
-        elif model.type == "Regression":
+        elif model.task == "Regression":
             metrics_df = pd.DataFrame({'r2': r2_list, 'MAE': mae_list, 'RMSE': rmse_list, 'Loss': loss_list})
         else:
-            raise ValueError("Issue with model.type!")
+            raise ValueError("Issue with model.task!")
         metrics_df.index.name = 'fold'
 
         # summary kept separate so metrics_df stays clean for downstream stats

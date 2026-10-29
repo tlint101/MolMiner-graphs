@@ -79,8 +79,8 @@ class MolToGraph:
             'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.
         :param add_smi: bool
             Whether to include the smiles string with the torch Data object.
-        :param add_feats: Optional[Union[np.array, list]]
-            Include additional information to include with the molecular graph tensor. Must be given as a np.array or a
+        :param add_feats: Optional[Union[np.ndarray, list]]
+            Include additional information to include with the molecular graph tensor. Must be given as a np.ndarray or a
             list.
         :param with_atom_index: bool
             To include the smi string with atom index. Defaults to False.
@@ -166,7 +166,7 @@ class Base(nn.Module):
         self.is_fitted = None
         self.y_mean = None
         self.y_std = None
-        self.type = None
+        self.task = None
         self.initial_params = None  # todo check if this one is needed
         # info for plot
         self.metrics = Metrics()
@@ -227,7 +227,7 @@ class Base(nn.Module):
             raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
 
         # set criterion
-        self.criterion = _set_criterion(criterion, self.type, self.classes)
+        self.criterion = _set_criterion(criterion, self.task, self.classes)
 
         # check dataset input:
         if isinstance(train_loader, list):
@@ -355,12 +355,12 @@ class Base(nn.Module):
                 print(f"Best Training MAE: {round(self.metrics.train_mae[best_train_epoch], 3)}")
                 print(f"Best Test MAE: {round(self.metrics.test_mae[best_test_epoch], 3)}")
 
-    def predict(self, data: Union[np.array, list, DataLoader], device: str = "auto",
+    def predict(self, data: Union[np.ndarray, list, DataLoader], device: str = "auto",
                 binary: Union[bool, float, str, None] = True, cutoff: float = 0.5, return_type: str = "list",
-                add_feats: Optional[Union[np.array, list, int]] = None, pbar: bool = False):
+                add_feats: Optional[Union[np.ndarray, list, int]] = None, pbar: bool = False):
         """
         Handle predictions for an input torch Dataloader.
-        :param data: Union[np.array, list, DataLoader]
+        :param data: Union[np.ndarray, list, DataLoader]
             Data for prediction. Must be converted into a graph and organized in an array or list.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
@@ -375,7 +375,7 @@ class Base(nn.Module):
             param is set to 'True'.
         :param return_type: str
             Set the return type of the prediction. Can be "tensor" or "list".
-        :param add_feats: Optional[Union[np.array, list, int]]
+        :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of additional features to be added. Must be the same as what was given during training.
         :param pbar: bool
              Show progress bar for predictions.
@@ -410,11 +410,11 @@ class Base(nn.Module):
                 output = model(datapoint)
 
                 # regression output
-                if self.type == "Regression":
+                if self.task == "Regression":
                     # regression gets raw output, no softmax/thresholding
                     pred_out = output
                 # classification output
-                elif self.type == "Classification":
+                elif self.task == "Classification":
                     # binary labels
                     if binary == True:
                         # grab positive class proba (index 1)
@@ -437,7 +437,7 @@ class Base(nn.Module):
                 all_preds.append(pred_out)
 
             # combine predictions from batch, concact and extract mx array
-            if self.type == "Regression":
+            if self.task == "Regression":
                 predictions = torch.cat(all_preds)
                 if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
                     predictions = predictions * self.y_std + self.y_mean
@@ -589,7 +589,7 @@ class Base(nn.Module):
 class GCNNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 128, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
-                 act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+                 act: str = "relu", add_feats: Optional[Union[np.ndarray, list, int]] = None, pooling: str = "mean"):
         """
         Generate graph model for graph convolutional (GCNC) network. The default model will generate two graph layers
         and one mlp layer.
@@ -611,9 +611,9 @@ class GCNNet(Base):
             Number of classes for the output layer.
         :param act: str
             Set the non-linear activation function. Default to "relu".
-         :param add_feats: Optional[Union[np.array, list, int]]
+         :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
-            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            features. If a np.ndarray/list of the additional features are given, the length of the data will be calculated
             and used to append the MLP input dimensions accordingly.
         :param pooling: str
             Set pooling method.
@@ -632,9 +632,9 @@ class GCNNet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gcn_conv = nn.ModuleList()
@@ -722,7 +722,7 @@ class GCNNet(Base):
 class GINNet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2, mlp_layers: int = 1,
                  reduce_graph: bool = False, graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
-                 act: str = "relu", add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+                 act: str = "relu", add_feats: Optional[Union[np.ndarray, list, int]] = None, pooling: str = "add"):
         """
         Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
         graph layers and one mlp layer.
@@ -744,9 +744,9 @@ class GINNet(Base):
             Number of classes for the output layer.
         :param act: str
             Set the non-linear activation function. Default to "relu".
-        :param add_feats: Optional[Union[np.array, list, int]]
+        :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
-            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            features. If a np.ndarray/list of the additional features are given, the length of the data will be calculated
             and used to append the MLP input dimensions accordingly.
         :param pooling: str
             Set pooling method.
@@ -765,9 +765,9 @@ class GINNet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gin_conv = nn.ModuleList()
@@ -865,7 +865,7 @@ class GINENet(Base):
     def __init__(self, node_dim: int = 142, edge_feat_dim: Union[int, None] = 16, hidden_dim: int = 64,
                  graph_layers: int = 2, mlp_layers: int = 1, reduce_graph: bool = False, graph_dropout: float = 0.0,
                  mlp_dropout: float = 0.0, num_classes: int = 2, act: str = "relu",
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "add"):
+                 add_feats: Optional[Union[np.ndarray, list, int]] = None, pooling: str = "add"):
         """
         Generate graph model for graph isomorphism convolutional (GINEConv) network. The default model will generate two
         graph layers and one mlp layer.
@@ -889,9 +889,9 @@ class GINENet(Base):
             Number of classes for the output layer.
         :param act: str
             Set the non-linear activation function. Default to "relu".
-        :param add_feats: Optional[Union[np.array, list, int]]
+        :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
-            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            features. If a np.ndarray/list of the additional features are given, the length of the data will be calculated
             and used to append the MLP input dimensions accordingly.
         :param pooling: str
             Set pooling method.
@@ -910,9 +910,9 @@ class GINENet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gine_conv = nn.ModuleList()
@@ -1009,7 +1009,7 @@ class GINENet(Base):
 class GSAGENet(Base):
     def __init__(self, node_dim: int = 142, hidden_dim: int = 128, graph_layers: int = 2, mlp_layers: int = 1,
                  graph_dropout: float = 0.0, mlp_dropout: float = 0.0, num_classes: int = 2,
-                 act: str = "relu", reduce_graph=False, add_feats: Optional[Union[np.array, list, int]] = None,
+                 act: str = "relu", reduce_graph=False, add_feats: Optional[Union[np.ndarray, list, int]] = None,
                  pooling: str = "mean"):
         """
         Generate a graph SAGE model neural network (GSAGENet). The default model will generate two graph layers and one
@@ -1032,9 +1032,9 @@ class GSAGENet(Base):
             Set the non-linear activation function. Default to "relu".
         :param reduce_graph: bool
             Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
-        :param add_feats: Optional[Union[np.array, list, int]]
+        :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
-            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            features. If a np.ndarray/list of the additional features are given, the length of the data will be calculated
             and used to append the MLP input dimensions accordingly.
         :param pooling: str
             Set pooling method.
@@ -1052,9 +1052,9 @@ class GSAGENet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.sage_conv = nn.ModuleList()
@@ -1156,7 +1156,7 @@ class GATNet(Base):
     def __init__(self, node_dim: int = 142, edge_feat_dim: Optional[int] = None, hidden_dim: int = 128, heads: int = 1,
                  graph_layers: int = 2, mlp_layers: int = 1, graph_dropout: float = 0.0, mlp_dropout: float = 0.0,
                  num_classes: int = 2, act: str = "relu", reduce_graph=False,
-                 add_feats: Optional[Union[np.array, list, int]] = None, pooling: str = "mean"):
+                 add_feats: Optional[Union[np.ndarray, list, int]] = None, pooling: str = "mean"):
         """
         Generate a Graph Attention Network neural network (GATNet). The default model will generate two graph layers and
         one mlp layer.
@@ -1182,9 +1182,9 @@ class GATNet(Base):
             Set the non-linear activation function. Default to "relu".
         :param reduce_graph: bool
             Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
-        :param add_feats: Optional[Union[np.array, list, int]]
+        :param add_feats: Optional[Union[np.ndarray, list, int]]
             The number of features to be added. If an int is given, it must correspond to the length of the additional
-            features. If a np.array/list of the additional features are given, the length of the data will be calculated
+            features. If a np.ndarray/list of the additional features are given, the length of the data will be calculated
             and used to append the MLP input dimensions accordingly.
         :param pooling: str
             Set pooling method.
@@ -1203,9 +1203,9 @@ class GATNet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gat_conv = nn.ModuleList()
@@ -1311,7 +1311,7 @@ class MLP_Baseline(nn.Module):
         self.is_fitted = False
         self.y_mean = None
         self.y_std = None
-        self.type = None
+        self.task = None
         self.initial_params = None
         # info for plot
         self.metrics = Metrics()
@@ -1377,22 +1377,22 @@ class MLP_Baseline(nn.Module):
             raise ValueError(f"Optimizer not recognized! Only {list(OPTIMIZERS.keys())} allowed!")
 
         # set criterion
-        self.criterion = _set_criterion(criterion, self.type, self.classes)
+        self.criterion = _set_criterion(criterion, self.task, self.classes)
 
         # check dataset input:
         if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
             pass  # can convert to tensor
         elif all(isinstance(x, list) for x in (x_train, x_test, y_train, y_test)):  # convert list to array
-            x_train, x_test, y_train, y_test = (np.array(x_train), np.array(x_test), np.array(y_train),
-                                                np.array(y_test))
+            x_train, x_test, y_train, y_test = (np.ndarray(x_train), np.ndarray(x_test), np.ndarray(y_train),
+                                                np.ndarray(y_test))
 
         # convert to tensor
-        if self.type == "Classification":
+        if self.task == "Classification":
             x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
             y_train = torch.tensor(y_train, dtype=torch.long, device=fit_device)
             x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
             y_test = torch.tensor(y_test, dtype=torch.long, device=fit_device)
-        elif self.type == "Regression":
+        elif self.task == "Regression":
             x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
             y_train = torch.tensor(y_train, dtype=torch.float32, device=fit_device)
             x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
@@ -1527,7 +1527,7 @@ class MLP_Baseline(nn.Module):
                 cutoff: float = 0.5, return_type: str = "list"):
         """
         Handle predictions for an input torch Dataloader.
-        :param data: Union[np.array, list]
+        :param data: Union[np.ndarray, list]
             Data for prediction. Must be converted into a graph and organized in an array or list.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
@@ -1554,7 +1554,7 @@ class MLP_Baseline(nn.Module):
         if isinstance(data, np.ndarray):
             pass
         elif isinstance(data, list):
-            data = np.array(data)
+            data = np.ndarray(data)
 
         if not isinstance(data, torch.Tensor):
             # convert to tensor
@@ -1569,11 +1569,11 @@ class MLP_Baseline(nn.Module):
         with torch.no_grad():  # disable gradient calculation
             output = model(data)
             # regression output
-            if self.type == "Regression":
+            if self.task == "Regression":
                 # regression gets raw output, no softmax/thresholding
                 pred_out = output
             # classification output
-            elif self.type == "Classification":
+            elif self.task == "Classification":
                 # binary labels
                 if binary == True:
                     # grab positive class proba (index 1)
@@ -1596,7 +1596,7 @@ class MLP_Baseline(nn.Module):
             all_preds.append(pred_out)
 
         # combine predictions from batch, concact and extract mx array
-        if self.type == "Regression":
+        if self.task == "Regression":
             predictions = torch.cat(all_preds)
             if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
                 predictions = predictions * self.y_std + self.y_mean
@@ -1675,9 +1675,9 @@ class MLP(MLP_Baseline):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set dimension of mlp layers
         self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)

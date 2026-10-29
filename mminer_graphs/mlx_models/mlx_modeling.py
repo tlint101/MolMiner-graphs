@@ -59,7 +59,7 @@ def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int =
     y_pred = np.array(y_pred)
     true_y = np.array(true_y)
 
-    if model.type == "Classification":
+    if model.task == "Classification":
         acc = accuracy_score(true_y, y_pred)
         prec = precision_score(true_y, y_pred)
         recall = recall_score(true_y, y_pred)
@@ -68,7 +68,7 @@ def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int =
         roc_auc = roc_auc_score(true_y, y_pred)
         metrics_dict = {'Accuracy': [acc], 'Precision': [prec], 'Recall': [recall], 'F1': [f1], 'MCC': [mcc],
                         'ROC_AUC': [roc_auc]}
-    elif model.type == "Regression":
+    elif model.task == "Regression":
         mae = mean_absolute_error(true_y, y_pred)
         mse = mean_squared_error(true_y, y_pred)
         r2 = r2_score(true_y, y_pred)
@@ -204,7 +204,7 @@ class Base(mlx.nn.Module):
         self.is_fitted = None
         self.y_mean = None
         self.y_std = None
-        self.type = None
+        self.task = None
         self.initial_params = None
         # info for plot
         self.metrics = Metrics()
@@ -272,7 +272,7 @@ class Base(mlx.nn.Module):
             raise ValueError(f"Optimizer not recognized! nly {list(MLX_OPTI.keys())} allowed!")
 
         # set criterion
-        self.criterion = _set_criterion(criterion, self.type, self.classes)
+        self.criterion = _set_criterion(criterion, self.task, self.classes)
 
         # check dataset input:
         np.random.seed(seed)  # try to enforce reproducibility
@@ -477,11 +477,11 @@ class Base(mlx.nn.Module):
             output = model(**kwargs)
 
             # regression output
-            if self.type == "Regression":
+            if self.task == "Regression":
                 # For regression, we just want the raw output, no softmax/thresholding
                 pred_out = output
             # classification output
-            elif self.type == "Classification":
+            elif self.task == "Classification":
                 # binary labels
                 if binary is True:
                     # grab positive class prob (index 1)
@@ -507,7 +507,7 @@ class Base(mlx.nn.Module):
             all_preds.append(pred_out)
 
         # combine predictions from batch, concact and extract mx array
-        if self.type == "Regression":
+        if self.task == "Regression":
             # squeeze regression output
             output = mx.array(all_preds)
             output_flat = mx.squeeze(output)
@@ -609,7 +609,7 @@ class Base(mlx.nn.Module):
             if 'y_mean' not in weights or 'y_std' not in weights:
                 raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Regression', "
                                  "but model is configured for 'Classification'?")
-            model.type = "Regression"
+            model.task = "Regression"
             model.y_mean = weights['y_mean']
             model.y_std = weights['y_std']
 
@@ -618,7 +618,7 @@ class Base(mlx.nn.Module):
             if 'y_mean' in weights or 'y_std' in weights:
                 raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Classification', "
                                  "but model is configured for 'Regression'?")
-            model.type = "Classification"
+            model.task = "Classification"
         else:
             raise ValueError(
                 f"Mismatch! criterion='{criterion}', num_classes={self.classes}. "
@@ -764,9 +764,9 @@ class GCNNet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gcn_conv = []
@@ -880,9 +880,9 @@ class GINENet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gine_conv = []
@@ -1003,9 +1003,9 @@ class GSAGENet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.sage_conv = []
@@ -1120,9 +1120,9 @@ class GATNet(Base):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set graph layers
         self.gat_conv = []
@@ -1209,7 +1209,7 @@ class MLP_Baseline(mlx.nn.Module):
         self.is_fitted = False
         self.y_mean = None
         self.y_std = None
-        self.type = None
+        self.task = None
         self.initial_params = None
         # info for plot
         self.metrics = Metrics()
@@ -1279,7 +1279,7 @@ class MLP_Baseline(mlx.nn.Module):
             raise ValueError(f"Optimizer not recognized! nly {list(MLX_OPTI.keys())} allowed!")
 
         # set criterion
-        self.criterion = _set_criterion(criterion, self.type, self.classes)
+        self.criterion = _set_criterion(criterion, self.task, self.classes)
 
         # check dataset input:
         np.random.seed(seed)  # try to enforce reproducibility
@@ -1470,10 +1470,10 @@ class MLP_Baseline(mlx.nn.Module):
             output = model(x)
 
             # regression output
-            if self.type == "Regression":
+            if self.task == "Regression":
                 pred_out = output
             # classification output
-            elif self.type == "Classification":
+            elif self.task == "Classification":
                 # binary labels
                 if binary == True:
                     proba = mx.softmax(output, axis=1)[:, 1]
@@ -1497,7 +1497,7 @@ class MLP_Baseline(mlx.nn.Module):
         # combine predictions from batch, concact and extract mx array
         predictions = mx.concatenate(all_preds, axis=0)
         # if regression, get set scale
-        if self.type == "Regression":
+        if self.task == "Regression":
             predictions = mx.squeeze(predictions)
             if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
                 predictions = predictions * self.y_std + self.y_mean
@@ -1572,7 +1572,7 @@ class MLP_Baseline(mlx.nn.Module):
             if 'y_mean' not in weights or 'y_std' not in weights:
                 raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Regression', "
                                  "but model is configured for 'Classification'?")
-            model.type = "Regression"
+            model.task = "Regression"
             model.y_mean = weights['y_mean']
             model.y_std = weights['y_std']
 
@@ -1581,7 +1581,7 @@ class MLP_Baseline(mlx.nn.Module):
             if 'y_mean' in weights or 'y_std' in weights:
                 raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Classification', "
                                  "but model is configured for 'Regression'?")
-            model.type = "Classification"
+            model.task = "Classification"
         else:
             raise ValueError(
                 f"Mismatch! criterion='{criterion}', num_classes={self.classes}. "
@@ -1641,9 +1641,9 @@ class MLP(MLP_Baseline):
 
         # set model type
         if isinstance(self.classes, int) and self.classes > 1:
-            self.type = "Classification"
+            self.task = "Classification"
         elif self.classes == 1 or self.classes is None:
-            self.type = "Regression"
+            self.task = "Regression"
 
         # set dimension of mlp layers
         self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
