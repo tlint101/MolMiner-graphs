@@ -1383,8 +1383,8 @@ class MLP_Baseline(nn.Module):
         if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
             pass  # can convert to tensor
         elif all(isinstance(x, list) for x in (x_train, x_test, y_train, y_test)):  # convert list to array
-            x_train, x_test, y_train, y_test = (np.ndarray(x_train), np.ndarray(x_test), np.ndarray(y_train),
-                                                np.ndarray(y_test))
+            x_train, x_test, y_train, y_test = (np.array(x_train), np.array(x_test), np.array(y_train),
+                                                np.array(y_test))
 
         # convert to tensor
         if self.task == "Classification":
@@ -1554,7 +1554,7 @@ class MLP_Baseline(nn.Module):
         if isinstance(data, np.ndarray):
             pass
         elif isinstance(data, list):
-            data = np.ndarray(data)
+            data = np.array(data)
 
         if not isinstance(data, torch.Tensor):
             # convert to tensor
