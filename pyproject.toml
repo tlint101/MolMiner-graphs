@@ -1,11 +1,11 @@
 [project]
-name = "molminer-graphs"
+name = "MolMiner-graphs"
 version = "0.0.1"
-description = "Create Molecular Graph Models"
+description = "For Creaming Molecular Graph Models"
 authors = [
     { name = "Tony Eight Lin", email = "tonyelin@tmu.edu.tw" }
 ]
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 dependencies = [
@@ -14,24 +14,28 @@ dependencies = [
     "pandas (>=2.1)",
     "rdkit (>=2023.09.5)",
     "seaborn (>=0.12.2)",
-    "datamol (>=0.12.4)",
-    "notebook (>=7.4.4)",
-    "ipywidgets (>=8.1.7)",
     "scikit-learn (>=1.6.1)",
     "torch (>=2.1.0)",
     "torchinfo (>=1.8.0)",
     "torch-geometric (>=2.6.1)",
     "torchviz (>=0.0.3)",
     "tabulate (>=0.9.0)",
+    "optuna (>=4.9.0)"
+]
+
+[project.optional-dependencies]
+mlx = [
     "mlx (>=0.31.1)",
-    "mlx-graphs (>=0.0.9)",
-    "ipykernel (>=7.3.0,<8.0.0)"
+    "mlx-graphs (>=0.0.9)"
 ]
 
 [dependency-groups]
 dev = [
+    "notebook (>=7.4.4)",
+    "ipykernel (>=7.3.0,<8.0.0)",
+    "ipywidgets (>=8.1.7)",
+    "datamol (>=0.12.4)",
     "py50 (>=1.1.0)",
-    "optuna (>=4.4.0)",
     "shap (>=0.48.0)"
 ]
 
