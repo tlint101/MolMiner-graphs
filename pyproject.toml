@@ -2,12 +2,17 @@
 name = "MolMiner-graphs"
 version = "0.0.1"
 description = "For Creaming Molecular Graph Models"
-authors = [
-    { name = "Tony Eight Lin", email = "tonyelin@tmu.edu.tw" }
-]
-license = { text = "Apache-2.0" }
+authors = [{ name = "Tony Eight Lin", email = "tonyelin@tmu.edu.tw" }]
+requires-python = ">=3.11"
 readme = "README.md"
-requires-python = ">=3.11,<3.15"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "matplotlib (>=3.10.3)",
     "numpy (>=2.0)",
@@ -20,14 +25,22 @@ dependencies = [
     "torch-geometric (>=2.6.1)",
     "torchviz (>=0.0.3)",
     "tabulate (>=0.9.0)",
-    "optuna (>=4.9.0)"
+    "optuna (>=4.9.0)",
 ]
 
 [project.optional-dependencies]
 mlx = [
     "mlx (>=0.31.1)",
-    "mlx-graphs (>=0.0.9)"
+    "mlx-graphs (>=0.0.9)",
 ]
+
+[tool.uv.build-backend]
+module-name = ["mminer_graphs"]
+module-root = ""
+
+[build-system]
+requires = ["uv_build>=0.13.5,<0.14.0"]
+build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
@@ -37,11 +50,5 @@ dev = [
     "datamol (>=0.12.4)",
     "py50 (>=1.1.0)",
     "shap (>=0.48.0)"
+,
 ]
-
-[tool.poetry]
-packages = [{ include = "mminer_graphs" }]
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
