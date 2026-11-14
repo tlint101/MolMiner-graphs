@@ -7,7 +7,7 @@ from mlx_graphs.loaders import Dataloader
 import mlx
 import mlx.core as mx
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
-from sklearn.metrics import precision_recall_curve, average_precision_score
+from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score
 
 
 class PlotsMLX:
@@ -225,26 +225,12 @@ class PlotsMLX:
         if model is None:
             model = self.model
         if data is None:
-            data = self.data
+            data = self.data if self.data is not None else (self.x_data, self.y_data)
         if add_feats is None:
             add_feats = self.add_feats
 
-        # make predictions
-        if data is not None:
-            preds = model.predict(data, batch_size=batch_size, binary=None, add_feats=add_feats, return_type="list")
-        elif self.x_data is not None and self.y_data is not None:
-            preds = model.predict(self.x_data, batch_size=batch_size, binary=None, return_type="list")
-
-        labels = []
-        # extract y value from Dataloader
-        if data is not None:
-            for batch in data:
-                y = batch.y
-                y_list = y.flatten().tolist()
-                labels.extend(y_list)
-        elif self.x_data is not None and self.y_data is not None:
-            y_list = self.y_data.flatten().tolist()
-            labels.extend(y_list)
+        # make predictions and extract results
+        labels, preds = self._regression_preds(model, data, add_feats, batch_size)
 
         # add metrics to legend
         if metric_output is not None:
@@ -320,6 +306,112 @@ class PlotsMLX:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
 
         plt.show()
+
+    def residuals(self, model: Optional[mlx.nn] = None, data: Optional[Union[Dataloader, list, tuple]] = None,
+                  train_data: Optional[Union[Dataloader, list, tuple]] = None,
+                  add_feats: Optional[Union[np.array, list, int]] = None, batch_size: int = 1024,
+                  histogram: bool = True, title: str = None, color: tuple = (None, None),
+                  legend_loc: str = "best", figsize: tuple[float, float] = (8, 5), fontsize: int = 12,
+                  titlesize: int = 15, grid: bool = False, savepath: str = None):
+        """
+        Create a residuals plot (actual - predicted) against the predicted values for a regression model. Points above 0
+        are under-predicted and points below 0 are over-predicted. If train_data is not given, only the test set is
+        shown.
+        :param model: Optional[mlx.nn]
+            A trained MLX regression model.
+        :param data: Optional[Union[Dataloader, list, tuple]]
+            The test dataset. If None, the data given at initialization of PlotsMLX() class is used. For tabular MLP
+            models, input a tuple of (features, labels).
+        :param train_data: Optional[Union[Dataloader, list, tuple]]
+            Optional. The train dataset, plotted alongside the test set. For tabular MLP models, input a tuple of
+            (features, labels).
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of additional features to be added. Must be the same as what was given during training.
+        :param batch_size: int
+            Set the batch size for the Dataloader. Only used if the data given is a list.
+        :param histogram: bool
+            Add a histogram of the residuals to the right side of the plot. Defaults to True.
+        :param title: str
+            Title of the plot. If None is given, the default title will be used.
+        :param color: tuple
+            Set color of the points and histogram as (train color, test color).
+        :param legend_loc: str
+            Set the location of the figure legend.
+        :param figsize: tuple
+            Set figure size.
+        :param fontsize: int
+            Font size for axis
+        :param titlesize: int
+            Font size for title
+        :param grid: bool
+            Set grid.
+        :param savepath: str
+            Filepath to save figure.
+        :return:
+        """
+        if model is None:
+            model = self.model
+        if data is None:
+            data = self.data if self.data is not None else (self.x_data, self.y_data)
+        if add_feats is None:
+            add_feats = self.add_feats
+
+        # datasets to plot as (label, data, color). Train set is optional.
+        datasets = [("Test", data, color[1])]
+        if train_data is not None:
+            datasets.insert(0, ("Train", train_data, color[0]))
+
+        # add a narrow axis on the right side for the histogram
+        if histogram:
+            fig, (ax, hist_ax) = plt.subplots(1, 2, sharey=True, figsize=figsize, gridspec_kw={"width_ratios": [4, 1]})
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
+
+        for name, current_data, current_color in datasets:
+            # make predictions and extract results for residuals
+            y_true, y_pred = self._regression_preds(model, current_data, add_feats, batch_size)
+            residuals = y_true - y_pred
+            r2 = r2_score(y_true, y_pred)
+
+            points = ax.scatter(y_pred, residuals, color=current_color, alpha=0.5, label=f"{name} $R^2$ = {r2:.3f}")
+            if histogram:
+                # match the histogram color
+                hist_ax.hist(residuals, bins=50, orientation="horizontal", color=points.get_facecolor()[0])
+
+        # horizontal line for a perfect prediction
+        ax.axhline(0, color='gainsboro', linestyle='--')
+        if histogram:
+            hist_ax.axhline(0, color='gainsboro', linestyle='--')
+            hist_ax.set_xlabel("Count", fontsize=fontsize)
+            hist_ax.grid(grid)
+
+        if title is None: title = "Residual Plot"
+        ax.grid(grid)
+        ax.set_xlabel("Predicted", fontsize=fontsize)
+        ax.set_ylabel("Residual (Actual - Predicted)", fontsize=fontsize)
+        ax.set_title(title, fontsize=titlesize)
+        ax.legend(loc=legend_loc)
+        plt.tight_layout()
+        if savepath: plt.savefig(savepath, dpi=300)
+        plt.show()
+
+    def _regression_preds(self, model, data, add_feats, batch_size):
+        """
+        Get the flattened values (actual, predicted) for a regression model. Data is a Dataloader or list of graphs.
+        For tabular MLP models, data is a tuple of (features, labels).
+        """
+        if isinstance(data, tuple):  # tabular MLP data
+            x, y = data
+            preds = model.predict(x, batch_size=batch_size, binary=None, return_type="list")
+            return np.ravel(y), np.ravel(preds)
+
+        # rebuild the loader without shuffling, otherwise the labels will not line up with the predictions
+        if isinstance(data, Dataloader):
+            data, batch_size = data.dataset, data.batch_size
+        data = Dataloader(data, batch_size=batch_size, shuffle=False)
+        preds = model.predict(data, batch_size=batch_size, binary=None, add_feats=add_feats, return_type="list")
+        labels = [y for batch in data for y in batch.y.flatten().tolist()]
+        return np.asarray(labels), np.ravel(preds)
 
     def confusion_matrix(self, model: Optional[mlx.nn] = None, data: Optional[Dataloader] = None,
                          batch_size: int = None, add_feats: Optional[Union[np.array, list, int]] = None,

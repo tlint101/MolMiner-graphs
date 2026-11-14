@@ -11,7 +11,7 @@ from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
-from sklearn.metrics import precision_recall_curve, average_precision_score
+from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score
 
 
 class Plots:
@@ -240,35 +240,13 @@ class Plots:
 
         if model is None:
             model = self.model
-        if not self.tabular:
-            data = self.data
-        elif self.tabular:
-            data = None
+        if data is None:
+            data = (self.x_data, self.y_data) if self.tabular else self.data
         if add_feats is None:
             add_feats = self.add_feats
 
-        # make predictions
-        if data is not None:
-            preds = model.predict(data, device=self.device, binary=False, add_feats=add_feats, return_type="tensor")
-        elif self.x_data is not None and self.y_data is not None:
-            preds = model.predict(self.x_data, device=self.device, binary=False, return_type="tensor")
-
-        # convert tensor to array and flatten
-        preds = preds.cpu().detach().numpy()
-        preds = preds.flatten()
-
-        # extract y value from DataLoader
-        labels = []
-        if data is not None:
-            for batch in data:
-                try:  # to catch if tabular data is given
-                    y = batch.y
-                except Exception as e:
-                    raise AttributeError(f"{e}\nDid you input 'tabular' data for MLP?")
-                y_list = y.flatten().tolist()
-                labels.extend(y_list)
-        elif self.x_data is not None and self.y_data is not None:
-            labels = self.y_data
+        # make predictions and extract results
+        labels, preds = self._regression_preds(model, data, add_feats)
 
         # add metrics to legend
         if metric_output is not None:
@@ -344,6 +322,112 @@ class Plots:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
 
         plt.show()
+
+    def residuals(self, model: Optional[torch.nn] = None, data: Optional[Union[DataLoader, list, tuple]] = None,
+                  train_data: Optional[Union[DataLoader, list, tuple]] = None,
+                  add_feats: Optional[Union[np.array, list, int]] = None, histogram: bool = True,
+                  title: str = None, color: tuple = (None, None), legend_loc: str = "best",
+                  figsize: tuple[float, float] = (8, 5), fontsize: int = 12, titlesize: int = 15,
+                  grid: bool = False, savepath: str = None):
+        """
+        Create a residuals plot (actual - predicted) against the predicted values for a regression model. Points above 0
+        are under-predicted and points below 0 are over-predicted. If train_data is not given, only the test set is
+        shown.
+        :param model: Optional[torch.nn]
+            A trained torch regression model.
+        :param data: Optional[Union[DataLoader, list, tuple]]
+            The test dataset. If None, the data given at initialization of Plots() class is used. For tabular MLP
+            models, input a tuple of (features, labels).
+        :param train_data: Optional[Union[DataLoader, list, tuple]]
+            Optional. The train dataset, plotted alongside the test set. For tabular MLP models, input a tuple of
+            (features, labels).
+        :param add_feats: Optional[Union[np.array, list, int]]
+            The number of additional features to be added. Must be the same as what was given during training.
+        :param histogram: bool
+            Add a histogram of the residuals to the right side of the plot. Defaults to True.
+        :param title: str
+            Title of the plot. If None is given, the default title will be used.
+        :param color: tuple
+            Set color of the points and histogram as (train color, test color).
+        :param legend_loc: str
+            Set the location of the figure legend.
+        :param figsize: tuple
+            Set figure size.
+        :param fontsize: int
+            Font size for axis
+        :param titlesize: int
+            Font size for title
+        :param grid: bool
+            Set grid.
+        :param savepath: str
+            Filepath to save figure.
+        :return:
+        """
+        if model is None:
+            model = self.model
+        if data is None:
+            data = (self.x_data, self.y_data) if self.tabular else self.data
+        if add_feats is None:
+            add_feats = self.add_feats
+
+        # datasets to plot as (label, data, color). Train set is only added if available.
+        datasets = [("Test", data, color[1])]
+        if train_data is not None:
+            datasets.insert(0, ("Train", train_data, color[0]))
+
+        # datasets to plot as (label, data, color). Train set is optional.
+        if histogram:
+            fig, (ax, hist_ax) = plt.subplots(1, 2, sharey=True, figsize=figsize, gridspec_kw={"width_ratios": [4, 1]})
+        else:
+            fig, ax = plt.subplots(figsize=figsize)
+
+        for name, current_data, current_color in datasets:
+            # make predictions and extract results for residuals
+            y_true, y_pred = self._regression_preds(model, current_data, add_feats)
+            residuals = y_true - y_pred
+            r2 = r2_score(y_true, y_pred)
+
+            points = ax.scatter(y_pred, residuals, color=current_color, alpha=0.5, label=f"{name} $R^2$ = {r2:.3f}")
+            if histogram:
+                # match the histogram color
+                hist_ax.hist(residuals, bins=50, orientation="horizontal", color=points.get_facecolor()[0])
+
+        # horizontal line for a perfect prediction
+        ax.axhline(0, color='gainsboro', linestyle='--')
+        if histogram:
+            hist_ax.axhline(0, color='gainsboro', linestyle='--')
+            hist_ax.set_xlabel("Count", fontsize=fontsize)
+            hist_ax.grid(grid)
+
+        if title is None: title = "Residual Plot"
+        ax.grid(grid)
+        ax.set_xlabel("Predicted", fontsize=fontsize)
+        ax.set_ylabel("Residual (Actual - Predicted)", fontsize=fontsize)
+        ax.set_title(title, fontsize=titlesize)
+        ax.legend(loc=legend_loc)
+        plt.tight_layout()
+        if savepath: plt.savefig(savepath, dpi=300)
+        plt.show()
+
+    def _regression_preds(self, model, data, add_feats):
+        """
+        Get the flattened values (actual, predicted) for a regression model. Data is a DataLoader or list of graphs.
+        For tabular MLP models, data is a tuple of (features, labels).
+        """
+        if isinstance(data, tuple):  # tabular MLP data
+            x, y = data
+            preds = model.predict(x, device=self.device, binary=False, return_type="tensor")
+            return np.ravel(y), preds.cpu().detach().numpy().flatten()
+
+        # rebuild the loader without shuffling, otherwise the labels will not line up with the predictions
+        if isinstance(data, TorchDataLoader):
+            data = type(data)(data.dataset, batch_size=data.batch_size)
+        preds = model.predict(data, device=self.device, binary=False, add_feats=add_feats, return_type="tensor")
+        try:  # to catch if tabular data is given
+            labels = [y for batch in data for y in batch.y.flatten().tolist()]
+        except AttributeError as e:
+            raise AttributeError(f"{e}\nDid you input 'tabular' data for MLP?")
+        return np.asarray(labels), preds.cpu().detach().numpy().flatten()
 
     def confusion_matrix(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                          add_feats: Optional[Union[np.array, list, int]] = None,
