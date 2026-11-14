@@ -509,7 +509,7 @@ class Base(mlx.nn.Module):
         # combine predictions from batch, concact and extract mx array
         if self.task == "Regression":
             # squeeze regression output
-            output = mx.array(all_preds)
+            output = mx.concatenate(all_preds, axis=0)  # ensure batches are uniform
             output_flat = mx.squeeze(output)
             predictions = output_flat
             if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
