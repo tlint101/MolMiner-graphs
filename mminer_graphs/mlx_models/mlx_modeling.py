@@ -286,7 +286,7 @@ class Base(mlx.nn.Module):
             if device == "auto" or device == "gpu":
                 print(f"Model running on {state_apple_silicon_device()}")
             else:
-                print(f"Model running on CPU. May have issues. Run using 'auto' or 'gpu' instead!")
+                print(f"Model running on CPU")
 
         # reset early_stopping if used
         if estop is not None and isinstance(estop, EarlyStopping):
@@ -2226,7 +2226,11 @@ def _set_criterion(criterion, task_type, num_classes):
         if criterion not in pulled_criterion:
             raise ValueError(
                 f"Criterion '{criterion}' not supported for task type '{task_type}'. Check 'num_classes' or 'criterion' params!")
-        criterion = pulled_criterion[criterion]
+        loss_fn = pulled_criterion[criterion]
+        if criterion in ("cross_entropy", "nll"):
+            # labels are stored as float32, change to int32 for use on CPU
+            return lambda y_hat, y: loss_fn(y_hat, y.astype(mx.int32))
+        criterion = loss_fn
 
     return criterion
 
