@@ -1,6 +1,6 @@
 [project]
 name = "MolMiner-graphs"
-version = "0.0.1"
+version = "0.0.2"
 description = "For Creating Molecular Graph Models"
 authors = [{ name = "Tony Eight Lin", email = "tonyelin@tmu.edu.tw" }]
 requires-python = ">=3.11"
