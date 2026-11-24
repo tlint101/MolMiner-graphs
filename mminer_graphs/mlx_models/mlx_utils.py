@@ -63,7 +63,7 @@ def get_device(device_type="auto"):
             device = mx.cuda
     else:
         raise ValueError(
-            f"Trying to run device on {device_type}. Only 'auto', 'cuda', 'gpu'(cuda), 'mps' or 'cpu' are supported!!")
+            f"Trying to run device on {device_type}. Only 'auto', 'gpu', 'cuda', or 'cpu' are supported!!")
     return device
 
 
