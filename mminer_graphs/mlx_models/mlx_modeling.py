@@ -1711,18 +1711,6 @@ class MLP(MLP_Baseline):
         # set dimension of mlp layers
         self.mlp, self.final_mlp = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
 
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
-
     def __call__(self, x, add_feats=None):
         # concatenate additional features
         if add_feats is not None:

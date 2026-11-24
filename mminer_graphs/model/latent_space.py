@@ -145,14 +145,6 @@ class GCN(Base):
             if reduce_graph:
                 hidden_dim = round(hidden_dim / 2)
 
-        # graph layer training info
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
@@ -224,14 +216,6 @@ class GINE(Base):
             if reduce_graph:
                 hidden_dim = round(hidden_dim / 2)
 
-        # graph layer training info
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
@@ -293,14 +277,6 @@ class GSAGE(Base):
             # normalize nodes
             self.normalization.append(nn.BatchNorm1d(graph_hidden_dim))
             in_channels = graph_hidden_dim  # reset in_channels for next layer
-
-        # graph layer training info
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -375,14 +351,6 @@ class GAT(Base):
             # normalize nodes
             self.normalization.append(nn.BatchNorm1d(out_channels))
             in_channels = out_channels  # reset in_channels for next layer
-
-        # graph layer training info
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch

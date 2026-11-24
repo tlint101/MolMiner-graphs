@@ -707,18 +707,6 @@ class GCNNet(Base):
         mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
-
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
 
@@ -847,18 +835,6 @@ class GINNet(Base):
         # get dimension of mlp layers
         mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
-
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -993,18 +969,6 @@ class GINENet(Base):
         mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
-
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
 
@@ -1126,18 +1090,6 @@ class GSAGENet(Base):
         # get dimension of mlp layers
         mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
-
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -1271,18 +1223,6 @@ class GATNet(Base):
         # get dimension of mlp layers
         mlp_dim = in_channels + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
-
-        # info for plot
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -1766,18 +1706,6 @@ class MLP(MLP_Baseline):
 
         # set dimension of mlp layers
         self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
-
-        # info for plot, needed for top level attribute
-        self.train_loss = []
-        self.test_loss = []
-        self.train_accuracy = []
-        self.test_accuracy = []
-        self.train_precision = []
-        self.test_precision = []
-        self.mcc = []
-        self.recall = []
-        self.f1_score = []
-        self.roc_auc = []
 
     def forward(self, data, **kwargs):
         # kwargs needed to 'ignore' inputs when calling summary
