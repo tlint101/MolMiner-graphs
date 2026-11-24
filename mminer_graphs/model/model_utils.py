@@ -15,6 +15,14 @@ graph_type_dict = {
     "ClusterGraph": ClusterGraph,
 }
 
+GRAPH_NODE_DIMS = {
+    "AtomGraph": 142,
+    "PharmacophoreGraph": 6,
+    "FunctionalGraph": 115,
+    "JunctionTreeGraph": 139,
+    "ClusterGraph": 139,
+}
+
 GRAPH_EDGE_DIMS = {
     "AtomGraph": 16,
     "PharmacophoreGraph": 3,

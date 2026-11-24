@@ -5,20 +5,28 @@ import pandas as pd
 import numpy as np
 import json
 import math
+import warnings
 import optuna
 from optuna.samplers import TPESampler
 import mlx.nn
 import mlx.core as mx
 from mlx_graphs.loaders import Dataloader
-from mminer_graphs.mlx_models import CrossVal, GINENet, GCNNet, EarlyStopping
+from mminer_graphs.mlx_models import CrossVal, GINENet, GCNNet, GSAGENet, GATNet, EarlyStopping
 from mminer_graphs.mlx_models.mlx_utils import set_seed
+from mminer_graphs.model.model_utils import GRAPH_NODE_DIMS, GRAPH_EDGE_DIMS
 from mminer_graphs.hyperparams.opt_plot import Optimization
 from typing import Optional, Union, Callable, Iterable, Type
 
 # params when calling the neural network
+_BASE_MODEL_PARAM_KEYS = {
+    "graph_layers", "mlp_layers", "hidden_dim", "node_dim",
+    "graph_dropout", "mlp_dropout", "num_classes", "add_feats",
+}
 MODEL_PARAM_KEYS = {
-    GINENet: {"graph_layers", "mlp_layers", "hidden_dim", "node_dim", "edge_feat_dim", "num_classes", "add_feats"},
-    GCNNet: {"graph_layers", "mlp_layers", "hidden_dim", "node_dim", "num_classes", "add_feats"}
+    GCNNet: _BASE_MODEL_PARAM_KEYS,
+    GINENet: _BASE_MODEL_PARAM_KEYS | {"edge_feat_dim"},
+    GSAGENet: _BASE_MODEL_PARAM_KEYS,
+    GATNet: _BASE_MODEL_PARAM_KEYS | {"edge_feat_dim", "heads"},
 }
 
 
@@ -49,14 +57,14 @@ class MLX_opt(Optimization):
 
     def opt_model(self, model: Optional[Type[mlx.nn.Module]] = None, estop: Optional[int] = 100,
                   n_trials: int = 5, dataset: pd.DataFrame = None, smi_col: str = "smiles",
-                  activity_col: str = "activity", num_classes: int = 2, add_feats: Optional[np.array] = None,
-                  graph_type: str = "AtomGraph", node_dim: int = 142, edge_dim: int = 16, graph_layers: int = 2,
-                  mlp_layers: int = 2, hidden_dims: tuple = (32, 128), graph_dropout: tuple = (0, 0.5),
-                  mlp_dropout: tuple = (0, 0.5), epochs: tuple = (50, 100), batch_size: tuple = (16, 128),
-                  optimizer: Optional[np.array] = None, lr: tuple = (1e-5, 1e-1), wt_decay: tuple = (1e-5, 1e-4),
-                  criterion: str = "cross_entropy", device: str = 'auto', cv: int = 2,
+                  activity_col: str = "activity", num_classes: Optional[int] = 2, add_feats: Optional[np.array] = None,
+                  graph_type: str = "AtomGraph", node_dim: Optional[int] = None, edge_dim: Optional[int] = None,
+                  graph_layers: int = 2, mlp_layers: int = 2, hidden_dims: tuple = (32, 128),
+                  graph_dropout: tuple = (0, 0.5), mlp_dropout: tuple = (0, 0.5), epochs: tuple = (50, 100),
+                  batch_size: tuple = (16, 128), optimizer: Optional[np.array] = None, lr: tuple = (1e-5, 1e-1),
+                  wt_decay: tuple = (1e-5, 1e-4), criterion: str = "cross_entropy", device: str = 'auto', cv: int = 2,
                   callbacks: Optional[Iterable[Callable[[optuna.Study, optuna.trial.FrozenTrial], None]]] = None,
-                  timeout: int = None, progress: bool = True, n_jobs: int = -1, seed: int = 42, verbose: bool = False):
+                  timeout: int = None, progress: bool = True, n_jobs: int = 1, seed: int = 42, verbose: bool = False):
         """
         Optimize the model using Optuna.
         :param model: Optional[Type[nn.Module]]
@@ -131,6 +139,19 @@ class MLX_opt(Optimization):
 
         if model is None:
             model = self.model
+        if model not in MODEL_PARAM_KEYS:
+            raise ValueError(f"Unsupported model class '{model}'. Supported: {list(MODEL_PARAM_KEYS.keys())}")
+        if graph_type not in GRAPH_NODE_DIMS:
+            raise ValueError(f"Unsupported graph_type '{graph_type}'. Supported: {list(GRAPH_NODE_DIMS.keys())}")
+        if node_dim is None:
+            node_dim = GRAPH_NODE_DIMS[graph_type]
+        if edge_dim is None:
+            edge_dim = GRAPH_EDGE_DIMS[graph_type]
+        if n_jobs != 1:
+            warnings.warn(
+                f"n_jobs={n_jobs} runs concurrent threads against shared MLX Metal GPU state and may crash; "
+                "use n_jobs=1 for MLX optimization."
+            )
 
         if optimizer is None:
             optimizer = ["adam", "sgd", "rmsprop", "adagrad", "adadelta", "adamax"]
@@ -146,7 +167,7 @@ class MLX_opt(Optimization):
             lambda trial: self._trial_space(graph_type, node_dim, edge_dim, trial, model, dataset, smi_col,
                                             activity_col, graph_layers, mlp_layers, hidden_dims, graph_dropout,
                                             mlp_dropout, num_classes, add_feats, epochs, batch_size, optimizer, lr,
-                                            wt_decay, device, cv, estop, verbose),
+                                            wt_decay, criterion, device, cv, estop, verbose),
             n_jobs=n_jobs,
             n_trials=n_trials, timeout=timeout, show_progress_bar=progress, callbacks=callbacks)
 
@@ -198,16 +219,14 @@ class MLX_opt(Optimization):
         else:
             raise ValueError("Issue with the model. Check the type. It must be 'Type[nn.Module]'!")
 
-        # set params
+        # set params (copy so caller's dict is not mutated)
         if not isinstance(params, (dict, str)):
             raise ValueError("Parameters must be given as a dictionary or a string to a json file!")
         elif isinstance(params, str):
             with open(params, 'r') as f:
                 params = json.load(f)
-        elif params is None:
-            raise ValueError("Parameters cannot be None!")
         else:
-            pass
+            params = dict(params)
 
         # additional params not found optimization
         params['node_dim'] = node_dim
@@ -223,16 +242,10 @@ class MLX_opt(Optimization):
             params['estop'] = estop
 
         # separate params for model and fitting
-        if model == GCNNet:
-            print("Building Optimized Model GCNNet model...")
-            for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout", "mlp_dropout",
-                                "add_feats"]
-        elif model == GINENet:
-            print("Building Optimized Model GINENet model...")
-            for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                "graph_dropout", "mlp_dropout", "add_feats"]
-        else:
-            raise ValueError("Issue with the input model param!")
+        if model not in MODEL_PARAM_KEYS:
+            raise ValueError(f"Unsupported model class '{model}'. Supported: {list(MODEL_PARAM_KEYS.keys())}")
+        print(f"Building Optimized {model.__name__} model...")
+        for_model_params = MODEL_PARAM_KEYS[model]
         for_fit_params = ["epochs", "optimizer", "criterion", "lr", "wt_decay", "device", "estop"]
 
         # add data to Dataloader
@@ -240,11 +253,11 @@ class MLX_opt(Optimization):
         train_loader = Dataloader(train_data, batch_size=batch_size, shuffle=True)
         test_loader = Dataloader(test_data, batch_size=batch_size)
 
-        model_params = {param_key: params[param_key] for param_key in for_model_params}
+        model_params = {param_key: params[param_key] for param_key in for_model_params if param_key in params}
         # if additional feats, add them to model_params
         if add_feats is not None:
-            model_params['add_feats'] = np.array(add_feats, dtype=np.float32)
-        fit_params = {param_key: params[param_key] for param_key in for_fit_params}
+            model_params['add_feats'] = np.array(add_feats, dtype=np.float32) if isinstance(add_feats, list) else add_feats
+        fit_params = {param_key: params[param_key] for param_key in for_fit_params if param_key in params}
 
         # build model
         build_model = model(**model_params)
@@ -253,8 +266,7 @@ class MLX_opt(Optimization):
         if hasattr(build_model, 'is_fitted') and build_model.is_fitted == True:
             build_model.reset_params()
 
-        # add additional params ot fit_params
-        fit_params['model'] = build_model
+        # add additional params to fit_params
         fit_params['train_loader'] = train_loader
         fit_params['test_loader'] = test_loader
 
@@ -297,16 +309,14 @@ class MLX_opt(Optimization):
         else:
             raise ValueError("Issue with the model. Check the type. It must be 'Type[nn.Module]'!")
 
-        # set params
+        # set params (copy so caller's dict is not mutated)
         if not isinstance(params, (dict, str)):
             raise ValueError("Parameters must be given as a dictionary or a string to a json file!")
         elif isinstance(params, str):
             with open(params, 'r') as f:
                 params = json.load(f)
-        elif params is None:
-            raise ValueError("Parameters cannot be None!")
         else:
-            pass
+            params = dict(params)
 
         # additional params not found optimization
         params['node_dim'] = node_dim
@@ -316,20 +326,13 @@ class MLX_opt(Optimization):
         params['criterion'] = criterion
         params['device'] = device
 
-        # separate params for model and fitting
-        if model == GCNNet:
-            print("Building GCNNet model...")
-            for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout", "mlp_dropout",
-                                "add_feats"]
-        elif model == GINENet:
-            print("Building GINENet model...")
-            for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                "graph_dropout", "mlp_dropout", "add_feats"]
-        else:
-            raise ValueError("Issue with the input model param!")
+        # separate params for model
+        if model not in MODEL_PARAM_KEYS:
+            raise ValueError(f"Unsupported model class '{model}'. Supported: {list(MODEL_PARAM_KEYS.keys())}")
+        print(f"Building {model.__name__} model...")
+        for_model_params = MODEL_PARAM_KEYS[model]
 
-        model_params = {param_key: params[param_key] for param_key in for_model_params}
-        # print(model_params)  # for debugging
+        model_params = {param_key: params[param_key] for param_key in for_model_params if param_key in params}
 
         # if additional feats, add them to model_params
         if add_feats is not None:
@@ -337,7 +340,7 @@ class MLX_opt(Optimization):
 
         # build model
         model = model(**model_params)  # load params
-        build_model = model.load(model_path)  # load weights
+        build_model = model.load(model_path, criterion=criterion)  # load weights
 
         return build_model
 
@@ -362,7 +365,7 @@ class MLX_opt(Optimization):
 
     def _trial_space(self, graph_type, node_dim, edge_dim, trial, model, dataset, smi_col, activity_col, graph_layers,
                      mlp_layers, hidden_dims, graph_dropout, mlp_dropout, num_classes, add_feats, epochs, batch_size,
-                     optimizer, lr, wt_decay, device, cv, estop, verbose):
+                     optimizer, lr, wt_decay, criterion, device, cv, estop, verbose):
         """sample the hyperparameter space"""
 
         mx.reset_peak_memory()  # clears GPU memory
@@ -374,6 +377,8 @@ class MLX_opt(Optimization):
             "mlp_layers": trial.suggest_int("mlp_layers", 1, mlp_layers),
             "hidden_dim": trial.suggest_int("hidden_dim", hidden_dims[0], hidden_dims[1], step=16),
             "mlp_dropout": trial.suggest_float("mlp_dropout", mlp_dropout[0], mlp_dropout[1]),
+            "node_dim": node_dim,
+            "edge_feat_dim": edge_dim,
             "num_classes": num_classes,
             "add_feats": add_feats
         }
@@ -392,20 +397,9 @@ class MLX_opt(Optimization):
         # filter params for specific model
         keys = MODEL_PARAM_KEYS[model]
         filtered_params = {k: v for k, v in total_params.items() if k in keys}
-        filtered_params["node_dim"] = node_dim
-        if model == "GINENet":
-            filtered_params["edge_feat_dim"] = edge_dim
-        if add_feats is not None:
-            filtered_params["add_feats"] = add_feats
-
-        # # troubleshooting
-        # print("THIS SHOULD BE FILTERED", filtered_params)
 
         # build model with params
         model = model(**filtered_params)
-        # # debug
-        # from mminer_graphs.mlx_models import summary
-        # print(summary(model))
 
         # set early stopping
         if estop is None:
@@ -417,7 +411,7 @@ class MLX_opt(Optimization):
         # get model scores
         try:
             score = self._get_score(graph_type, model, dataset, early_stopping, cv, smi_col, activity_col, add_feats,
-                                    batch_size, epoch, optimizer, lr, wt_decay, device, verbose)
+                                    batch_size, epoch, optimizer, lr, wt_decay, criterion, device, verbose)
 
             # if scores invalid
             if score is None or (isinstance(score, float) and math.isnan(score)):
@@ -426,24 +420,34 @@ class MLX_opt(Optimization):
             return score
         # if batch size contains 1 only, skip
         except ValueError as e:
-            if "Expected more than 1 value per channel when training" in str(e):
+            err_msg = str(e)
+            if (
+                "BatchNorm training requires more than one value per channel" in err_msg
+                or "Expected more than 1 value per channel when training" in err_msg
+            ):
                 print("Skipping trial due to BatchNorm batch size issue.")
                 raise optuna.exceptions.TrialPruned()
             raise
 
     def _get_score(self, graph_type, model, dataset, early_stopping, cv, smi_col, activity_col, add_feats, batch_size,
-                   epoch, optimizer, lr, wt_decay, device, verbose):
+                   epoch, optimizer, lr, wt_decay, criterion, device, verbose):
         """support function to get the model cv scores"""
         cval = CrossVal(model=model, dataset=dataset, estop=early_stopping)
         metrics = cval.get_cv_scores(graph_type=graph_type, cv=cv, smi_col=smi_col, activity_col=activity_col,
                                      add_feats=add_feats, batch_size=batch_size, epochs=epoch, optimizer=optimizer,
-                                     lr=lr, wt_decay=wt_decay, device=device, verbose=verbose, pbar=False,
-                                     device_warn=False)
+                                     lr=lr, wt_decay=wt_decay, criterion=criterion, device=device, verbose=verbose,
+                                     pbar=False, device_warn=False)
 
-        # average metrics
-        acc = metrics['Accuracy'].mean()
-        prec = metrics['Precision'].mean()
-        loss = metrics['Loss'].mean()
+        loss = float(metrics['Loss'].mean())
+
+        if model.task == "Regression":
+            if self.direction == "maximize":
+                return 1.0 / (1.0 + loss)
+            return loss
+
+        # classification: average metrics
+        acc = float(metrics['Accuracy'].mean())
+        prec = float(metrics['Precision'].mean())
 
         # convert loss from 0 to 1 scale
         n_loss = 1 / (1 + loss)
