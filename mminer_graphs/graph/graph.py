@@ -218,8 +218,8 @@ class AtomGraph(MolGraph):
     @staticmethod
     def _get_bond_feats(bond, chirality: bool = True):
         """
-        Get bond features (Total: 11). The features are ordered as follows:
-        - numm bond (1)
+        Get bond features (Total: 16). The features are ordered as follows:
+        - null bond (1)
         - bond type (4)
         - conjugated (1)
         - aromatic (1)
