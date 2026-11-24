@@ -7,7 +7,7 @@ from mlx_graphs.loaders import Dataloader
 import mlx
 import mlx.core as mx
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
-from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score
+from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score, mean_absolute_error, root_mean_squared_error
 
 
 class PlotsMLX:
@@ -60,14 +60,10 @@ class PlotsMLX:
 
         # if tabular MLP data
         if x_data is not None and y_data is not None:
-            # check dataset input:
-            if all(isinstance(x, np.ndarray) for x in (x_data, y_data)):
-                pass  # can convert to tensor
-            elif all(isinstance(x, list) for x in (x_data, y_data)):  # convert list to array
-                x_data, y_data = (np.asarray(x_data, dtype=np.float32), np.asarray(y_data, dtype=np.float32))
-                x_data, y_data = (mx.array(x_data), mx.array(y_data))
-            elif all(isinstance(x, mx.array) for x in (x_data, y_data)):
-                pass
+            if not isinstance(x_data, (np.ndarray, mx.array)):
+                x_data = np.asarray(x_data, dtype=np.float32)
+            if not isinstance(y_data, (np.ndarray, mx.array)):
+                y_data = np.asarray(y_data)
             self.x_data = x_data
             self.y_data = y_data
         else:
@@ -102,19 +98,31 @@ class PlotsMLX:
             Set the savepath for the image.
         :return:
         """
-        global input_metrics
         if model is None:
             model = self.model
         if not model.is_fitted:
             raise ValueError("MLX model is not fitted!!!")
 
-        # if list, only accept accuracy, loss, or precision
-        if isinstance(metrics, list):
-            for metric in metrics:
-                if metric not in {'loss', 'accuracy', 'precision', 'mae', 'rmse', 'r2'}:
-                    raise ValueError(f"Only 'loss', 'accuracy', or 'precision' are supported!!")
-                else:
-                    input_metrics = metrics
+        # normalize and validate requested metrics
+        valid_metrics = {'loss', 'accuracy', 'precision', 'mae', 'rmse', 'r2'}
+        if isinstance(metrics, str):
+            input_metrics = [metrics]
+        elif isinstance(metrics, (list, tuple)):
+            input_metrics = list(metrics)
+        else:
+            raise TypeError("metrics must be a list of metric names or a metric string!")
+
+        if len(input_metrics) == 0:
+            raise ValueError("At least one metric must be specified!")
+
+        for metric in input_metrics:
+            if metric not in valid_metrics:
+                raise ValueError("Only 'loss', 'accuracy', 'precision', 'mae', 'rmse', or 'r2' are supported!!")
+            train_key, test_key = f"train_{metric}", f"test_{metric}"
+            if train_key not in model.metrics.__dict__ or test_key not in model.metrics.__dict__:
+                raise ValueError(f"Input metric '{metric}' not found on model.metrics!")
+            if len(getattr(model.metrics, train_key)) == 0 or len(getattr(model.metrics, test_key)) == 0:
+                raise ValueError(f"No recorded history for metric '{metric}' on this {model.task} model!")
 
         if title is None:
             title = "Model Training History"
@@ -243,28 +251,19 @@ class PlotsMLX:
         # make predictions and extract results
         labels, preds = self._regression_preds(model, data, add_feats, batch_size)
 
-        # add metrics to legend
+        # add metrics computed directly on the plotted (labels, preds)
         if metric_output is not None:
-            # initialize vars
-            r2 = mae = rmse = None
-
-            # calculate metrics
-            best_epoch = model.metrics.best_epoch
+            parts = []
             if 'R2' in metric_output:
-                r2 = round(model.metrics.test_r2[best_epoch], 3)
+                r2 = round(float(r2_score(labels, preds)), 3)
+                parts.append(f"R²: {r2}")
             if 'MAE' in metric_output:
-                mae = round(model.metrics.test_mae[best_epoch], 3)
+                mae = round(float(mean_absolute_error(labels, preds)), 3)
+                parts.append(f"MAE: {mae}")
             if 'RMSE' in metric_output:
-                rmse = round(model.metrics.test_rmse[best_epoch], 3)
-
-            # build string
-            text = ""
-            if r2 is not None:
-                text += f"R²: {r2}\n"
-            if mae is not None:
-                text += f"MAE: {mae}\n"
-            if rmse is not None:
-                text += f"RMSE: {rmse}"
+                rmse = round(float(root_mean_squared_error(labels, preds)), 3)
+                parts.append(f"RMSE: {rmse}")
+            text = "\n".join(parts) if parts else None
         else:
             text = None
 
@@ -562,7 +561,6 @@ class PlotsMLX:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 
@@ -735,7 +733,6 @@ class PlotsMLX:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 
@@ -842,7 +839,6 @@ class PlotsMLX:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 

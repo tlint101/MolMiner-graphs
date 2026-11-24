@@ -11,7 +11,8 @@ from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.data import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
-from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score
+from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score, mean_absolute_error, root_mean_squared_error
+from mminer_graphs.model.model_utils import get_device
 
 
 class Plots:
@@ -52,29 +53,35 @@ class Plots:
         plt.rcParams['font.family'] = font
         plt.rcParams['font.size'] = font_size
 
+        self.data = None
         if data_loader is not None:
             self.data = data_loader
 
         # if tabular MLP data
-        if x_data and y_data is not None:
-            # check dataset input:
-            if all(isinstance(x, np.ndarray) for x in (x_data, y_data)):
-                pass  # can convert to tensor
-            elif all(isinstance(x, list) for x in (x_data, y_data)):  # convert list to array
-                x_data, y_data = (np.array(x_data), np.array(y_data))
+        if x_data is not None and y_data is not None:
+            fit_device = get_device(device)
+            x_arr = x_data.detach().cpu().numpy() if isinstance(x_data, torch.Tensor) else np.asarray(x_data, dtype=np.float32)
+            y_arr = y_data.detach().cpu().numpy() if isinstance(y_data, torch.Tensor) else np.asarray(y_data)
+
+            is_regression = (
+                (model is not None and getattr(model, "task", None) == "Regression")
+                or np.issubdtype(y_arr.dtype, np.floating)
+            )
+            y_dtype = torch.float32 if is_regression else torch.long
 
             # convert to tensor
-            x_data_tensor = torch.tensor(x_data, dtype=torch.float32, device=device)
-            y_data_tensor = torch.tensor(y_data, dtype=torch.long, device=device)
+            x_data_tensor = torch.tensor(x_arr, dtype=torch.float32, device=fit_device)
+            y_data_tensor = torch.tensor(y_arr, dtype=y_dtype, device=fit_device)
 
             # wrap tensors into a Dataset
             test_dataset = TensorDataset(x_data_tensor, y_data_tensor)
 
             # load data
-            test_loader = TorchDataLoader(test_dataset, batch_size=batch_size)
+            loader_batch_size = batch_size if batch_size is not None else 1024
+            test_loader = TorchDataLoader(test_dataset, batch_size=loader_batch_size)
             self.data = test_loader
-            self.x_data = x_data
-            self.y_data = y_data
+            self.x_data = x_arr
+            self.y_data = y_arr
             self.tabular = True
         else:
             self.x_data = None
@@ -109,28 +116,31 @@ class Plots:
             Set the savepath for the image.
         :return:
         """
-        global input_metrics
         if model is None:
             model = self.model
         if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
 
-        # get data metrics from model
-        metric_list = list(model.__dict__)
+        # normalize and validate requested metrics
+        valid_metrics = {'loss', 'accuracy', 'precision', 'mae', 'rmse', 'r2'}
+        if isinstance(metrics, str):
+            input_metrics = [metrics]
+        elif isinstance(metrics, (list, tuple)):
+            input_metrics = list(metrics)
+        else:
+            raise TypeError("metrics must be a list of metric names or a metric string!")
 
-        # if list, only accept accuracy, loss, or precision, mae, rmse, or r2
-        if isinstance(metrics, list):
-            for metric in metrics:
-                if metric not in {'loss', 'accuracy', 'precision', 'mae', 'rmse', 'r2'}:
-                    raise ValueError(f"Only 'loss', 'accuracy', 'precision','mae', 'rmse', or 'r2' are supported!!")
-                else:
-                    input_metrics = metrics
+        if len(input_metrics) == 0:
+            raise ValueError("At least one metric must be specified!")
 
-        # match input_metrics to metric_list
-        metric_input_match = [metric for metric in metric_list if any(key in metric for key in input_metrics)]
-        metrics_len = len(metric_input_match)
-        if metrics_len == 0:
-            raise ValueError(f"Input metrics '{metrics}' not found!")
+        for metric in input_metrics:
+            if metric not in valid_metrics:
+                raise ValueError("Only 'loss', 'accuracy', 'precision', 'mae', 'rmse', or 'r2' are supported!!")
+            train_key, test_key = f"train_{metric}", f"test_{metric}"
+            if train_key not in model.metrics.__dict__ or test_key not in model.metrics.__dict__:
+                raise ValueError(f"Input metric '{metric}' not found on model.metrics!")
+            if len(getattr(model.metrics, train_key)) == 0 or len(getattr(model.metrics, test_key)) == 0:
+                raise ValueError(f"No recorded history for metric '{metric}' on this {model.task} model!")
 
         if title is None:
             title = "Model Training History"
@@ -259,28 +269,19 @@ class Plots:
         # make predictions and extract results
         labels, preds = self._regression_preds(model, data, add_feats)
 
-        # add metrics to legend
+        # add metrics computed directly on the plotted (labels, preds)
         if metric_output is not None:
-            # initialize vars
-            r2 = mae = rmse = None
-
-            # calculate metrics
-            best_epoch = model.metrics.best_epoch
+            parts = []
             if 'R2' in metric_output:
-                r2 = round(model.metrics.test_r2[best_epoch], 3)
+                r2 = round(float(r2_score(labels, preds)), 3)
+                parts.append(f"R²: {r2}")
             if 'MAE' in metric_output:
-                mae = round(model.metrics.test_mae[best_epoch], 3)
+                mae = round(float(mean_absolute_error(labels, preds)), 3)
+                parts.append(f"MAE: {mae}")
             if 'RMSE' in metric_output:
-                rmse = round(model.metrics.test_rmse[best_epoch], 3)
-
-            # build string
-            text = ""
-            if r2 is not None:
-                text += f"R²: {r2}\n"
-            if mae is not None:
-                text += f"MAE: {mae}\n"
-            if rmse is not None:
-                text += f"RMSE: {rmse}"
+                rmse = round(float(root_mean_squared_error(labels, preds)), 3)
+                parts.append(f"RMSE: {rmse}")
+            text = "\n".join(parts) if parts else None
         else:
             text = None
 
@@ -617,7 +618,6 @@ class Plots:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 
@@ -773,7 +773,6 @@ class Plots:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 
@@ -887,7 +886,6 @@ class Plots:
 
         if savepath is not None:
             fig.savefig(savepath, bbox_inches='tight', dpi=300)
-            plt.show()
 
         plt.show()
 
