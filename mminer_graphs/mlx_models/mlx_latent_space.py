@@ -260,7 +260,10 @@ class GINE(Base):
         # graph layers
         act_fn = MLX_ACT[self.act]
         for conv, norm in zip(self.gine_conv, self.normalization):
-            x = conv(edge_index, x)
+            if edge_features is not None and "edge_projection" in conv:
+                x = conv(edge_index, x, edge_features)
+            else:
+                x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
             x = self.graph_drop(x)
