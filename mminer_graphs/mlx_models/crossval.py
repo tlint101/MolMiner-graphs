@@ -151,28 +151,26 @@ class CrossVal:
             if isinstance(add_feats, list):
                 add_feats = np.array(add_feats, dtype=np.float32)
 
+        # featurize all molecules once before the fold loop
+        if add_feats is not None:
+            all_graphs = [
+                MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data
+                for smi, y, extra in zip(data[smi_col], data[activity_col], add_feats)
+            ]
+        else:
+            all_graphs = [
+                MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data
+                for smi, y in zip(data[smi_col], data[activity_col])
+            ]
+
         # extract by positional index
         for x in tqdm(range(len(cv_index)), desc="CV Round", disable=not pbar):
             train_indices = cv_index[x][0]
             test_indices = cv_index[x][1]
-            train_df = data.iloc[train_indices]
-            test_df = data.iloc[test_indices]
 
-            # slice add_feats
-            if add_feats is not None:
-                train_add_feats = add_feats[train_indices]
-                test_add_feats = add_feats[test_indices]
-
-                # create graphs with add_feats
-                train_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data for
-                                smi, y, extra in zip(train_df[smi_col], train_df[activity_col], train_add_feats)]
-                test_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data for
-                               smi, y, extra in zip(test_df[smi_col], test_df[activity_col], test_add_feats)]
-            else:
-                train_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data for smi, y, in
-                                zip(train_df[smi_col], train_df[activity_col])]
-                test_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data for smi, y in
-                               zip(test_df[smi_col], test_df[activity_col])]
+            # slice pre-featurized graphs for this fold
+            train_graphs = [all_graphs[i] for i in train_indices]
+            test_graphs = [all_graphs[i] for i in test_indices]
 
             # load data (drop trailing partial batch if requested and at least one full batch exists)
             loader_cls = _DropLastDataloader if (drop_last and len(train_graphs) >= batch_size) else Dataloader

@@ -254,7 +254,6 @@ class Base(mlx.nn.Module):
             kwargs for a given criterion.
         :return:
         """
-        global y_mean, y_std
         # set model to current instance and reset training history
         model = self
         self.metrics = Metrics()
@@ -286,6 +285,8 @@ class Base(mlx.nn.Module):
                                       shuffle=True)  # avoid overfitting to sample order
         if isinstance(test_loader, list):
             test_loader = Dataloader(test_loader, batch_size=batch_size)
+        # test_loader does not shuffle; collate its batches once and reuse each epoch
+        test_batches = list(test_loader)
 
         if device_warn:
             if device == "auto" or device == "gpu":
@@ -317,7 +318,7 @@ class Base(mlx.nn.Module):
             for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
                 train_loss, train_acc, train_prec = train_c(model, train_loader, loss_and_grad_fn,
                                                             optimizer)
-                test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_c(model, test_loader,
+                test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc = test_c(model, test_batches,
                                                                                   self.criterion)
                 # add metrics
                 self.metrics.train_loss.append(train_loss)
@@ -373,7 +374,7 @@ class Base(mlx.nn.Module):
             for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
                 train_loss, train_mae, train_rmse, train_r2 = train_r(model, train_loader, loss_and_grad_fn,
                                                                       optimizer, y_mean, y_std)
-                test_loss, test_mae, test_rmse, test_r2 = test_r(model, test_loader, self.criterion, y_mean,
+                test_loss, test_mae, test_rmse, test_r2 = test_r(model, test_batches, self.criterion, y_mean,
                                                                  y_std)
                 # add metrics
                 self.metrics.train_loss.append(train_loss)
@@ -469,7 +470,6 @@ class Base(mlx.nn.Module):
         # fit_device = get_device(device)
         # print(f"Prediction running on {fit_device}")
         # set model to current instance
-        global pred_out
         model = self
         if self.add_feats is not None:
             add_feats = self.add_feats
@@ -487,23 +487,22 @@ class Base(mlx.nn.Module):
         elif isinstance(data, Dataloader):
             data = data
 
+        uses_edge_features = model._has_param("edge_features")
+        uses_add_feats = model._has_param("add_feats")
         all_preds = []
 
         for x in tqdm(data, disable=not pbar):
-            # forward pass
-            # check if edge_features used by model, checks using hte model.__call__
-            sig = inspect.signature(model.__call__)
             # set features
             kwargs = {
                 "edge_index": getattr(x, "edge_index", None),
                 "x": getattr(x, "node_features", None),
                 "batch_indices": getattr(x, "batch_indices", None)
             }
-            if "edge_features" in sig.parameters and hasattr(x, "edge_features"):
+            if uses_edge_features and hasattr(x, "edge_features"):
                 kwargs["edge_features"] = x.edge_features
-            if "add_feats" in sig.parameters and hasattr(x, "add_feats") and add_feats is not None:
+            if uses_add_feats and hasattr(x, "add_feats") and add_feats is not None:
                 kwargs["add_feats"] = x.add_feats
-            elif "add_feats" in sig.parameters and hasattr(x, "add_feats") and add_feats is None:
+            elif uses_add_feats and hasattr(x, "add_feats") and add_feats is None:
                 raise ValueError("'add_feats' found in input, but not given for prediction!")
 
             output = model(**kwargs)
@@ -700,6 +699,14 @@ class Base(mlx.nn.Module):
         loss = mx.mean(self.criterion(y_hat, y))
         return loss
 
+    def _has_param(self, param_name: str) -> bool:
+        """Cache and check whether __call__ accepts param_name without per-batch reflection."""
+        call_params = getattr(self, "_call_params", None)
+        if call_params is None:
+            call_params = frozenset(inspect.signature(self.__call__).parameters)
+            self._call_params = call_params
+        return param_name in call_params
+
     def _forward_fn(self, model, graph, labels):
         """forward function"""
         if hasattr(graph, "add_feats"):
@@ -716,9 +723,8 @@ class Base(mlx.nn.Module):
                 "batch_indices": graph.batch_indices,
             }
 
-        # determine if model accepts additional edge_features
-        sig = inspect.signature(model.__call__)
-        if "edge_features" in sig.parameters:
+        # check cached model signature for edge_features
+        if model._has_param("edge_features"):
             model_args["edge_features"] = graph.edge_features
 
         # forward pass
@@ -1283,7 +1289,6 @@ class MLP_Baseline(mlx.nn.Module):
             kwargs for a given criterion.
         :return:
         """
-        global y_mean, y_std
         # set model and reset training history
         model = self
         self.metrics = Metrics()
@@ -1405,7 +1410,7 @@ class MLP_Baseline(mlx.nn.Module):
 
             for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
                 train_loss, train_mae, train_rmse, train_r2 = train_mlp_r(model, x_train, y_train, loss_and_grad_fn,
-                                                                          optimizer, batch_size)
+                                                                          optimizer, batch_size, y_mean, y_std)
                 test_loss, test_mae, test_rmse, test_r2 = test_mlp_r(model, x_test, y_test, self.criterion, batch_size,
                                                                      y_mean, y_std)
                 # add metrics
@@ -1660,7 +1665,7 @@ class MLP_Baseline(mlx.nn.Module):
     def _loss_fn(self, model, X, y, parameters=None):
         y_output = model(X)
         loss = mx.mean(self.criterion(y_output, y))
-        return loss
+        return loss, y_output
 
     def _eval_fn(self, model, X, y):
         """Compute accuracy"""
@@ -1780,40 +1785,29 @@ def _batch_iterate(batch_size, X, y, shuffle: bool = True):
 def train_mlp_c(model, x_train, y_train, optimizer, loss_and_grad_fn, batch_size):
     """Support function for training the MLX model"""
     model.train()
-    total_loss = 0
-    correct = 0
-    total_samples = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
 
     for X, y in _batch_iterate(batch_size, x_train, y_train):
-        loss, grads = loss_and_grad_fn(model, X, y)
+        (loss, y_output), grads = loss_and_grad_fn(model, X, y)
 
-        # update params
+        # update params and reuse y_output from the single forward pass
         optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state)
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
-
-        # get predictions from logits
-        y_output = model(X)
         pred = mx.argmax(y_output, axis=1)
-        correct += (pred == y).sum().item()
-        total_samples += y.shape[0]
+        mx.eval(model.parameters(), optimizer.state, loss, pred)
 
-        # store predictions and labels
+        batch_losses.append(loss)
         all_preds.append(pred)
         all_labels.append(y)
 
-    # calculate metrics
+    # read scalars and compute metrics once at end of epoch
+    train_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_preds_np = np.array(mx.concatenate(all_preds, axis=0))
     all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
     avg = "binary" if model.classes == 2 else "macro"
 
-    # average loss per batch
-    train_loss = total_loss / batch_count
-    train_acc = correct / total_samples
+    train_acc = float(np.mean(all_preds_np == all_labels_np))
     train_precision = precision_score(all_labels_np, all_preds_np, average=avg, zero_division=0)
 
     return train_loss, train_acc, train_precision
@@ -1822,40 +1816,30 @@ def train_mlp_c(model, x_train, y_train, optimizer, loss_and_grad_fn, batch_size
 def test_mlp_c(model, x_test, y_test, loss_fn, batch_size):
     """Support function for testing MLX model"""
     model.eval()
-    total_loss = 0
-    correct = 0
-    total_samples = 0
-    batch_count = 0
+    batch_losses = []
     all_predictions = []
     all_proba = []
     all_labels = []
 
     for X, y in _batch_iterate(batch_size, x_test, y_test, shuffle=False):
-        # forward pass and loss calculation
-        y_output = model(X)
-        loss = loss_fn(model, X, y)
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
-
-        # predictions
+        # single forward pass returning both loss and logits
+        loss, y_output = loss_fn(model, X, y)
         predictions = mx.argmax(y_output, axis=1)
         proba = mx.softmax(y_output, axis=1)
-        correct += (predictions == y).sum().item()
-        total_samples += y.shape[0]
+        mx.eval(loss, predictions, proba)
 
-        # store for metrics calculation
+        batch_losses.append(loss)
         all_predictions.append(predictions)
         all_proba.append(proba)
         all_labels.append(y)
 
-    # convert to numpy for sklearn metrics
+    # read scalars and convert to numpy once at end of epoch
+    test_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
     all_predictions_np = np.array(mx.concatenate(all_predictions, axis=0))
     all_proba_np = np.array(mx.concatenate(all_proba, axis=0))
 
-    # average loss per batch
-    test_loss = total_loss / batch_count
-    test_acc = correct / total_samples
+    test_acc = float(np.mean(all_predictions_np == all_labels_np))
     test_precision, mcc, recall, f1, roc_auc = _compute_cls_metrics(
         all_labels_np, all_predictions_np, all_proba_np, model.classes
     )
@@ -1863,67 +1847,46 @@ def test_mlp_c(model, x_test, y_test, loss_fn, batch_size):
     return test_loss, test_acc, test_precision, mcc, recall, f1, roc_auc
 
 
-def train_mlp_r(model, x_train, y_train, loss_and_grad_fn, optimizer, batch_size):
+def train_mlp_r(model, x_train, y_train, loss_and_grad_fn, optimizer, batch_size, y_mean=None, y_std=None):
     """Support function for mlx regression model"""
     model.train()
-    total_loss = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
 
-    # for scaling, collect all y labels
-    all_y_list = []
-    for X, y in _batch_iterate(batch_size, x_train, y_train):
-        all_y_list.append(y)
-
-    # for data in x_train:
-    #     all_y_list.append(data.y)
-    all_y = mx.concatenate(all_y_list, axis=0) if all_y_list else None
-
-    y_mean = all_y.mean()
-    y_std = all_y.std()
-    if y_std == 0: y_std = 1.0
+    # fall back to computing scaling stats only if not precomputed by fit()
+    if y_mean is None or y_std is None:
+        y_mean = y_train.mean()
+        y_std = y_train.std()
+        if y_std == 0:
+            y_std = 1.0
 
     for X, y in _batch_iterate(batch_size, x_train, y_train):
-        # forward pass
-        # unit scale
+        # standardize target
         y_true_reshaped = mx.expand_dims(y, axis=-1)
         y_standardized = (y_true_reshaped - y_mean) / y_std
 
-        loss, grads = loss_and_grad_fn(model, X, y_standardized)
+        # single forward pass returning both loss and predictions
+        (loss, y_output), grads = loss_and_grad_fn(model, X, y_standardized)
 
-        # Update params
+        # update params
         optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state)
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
+        mx.eval(model.parameters(), optimizer.state, loss, y_output)
 
-        # get prediction
-        y_output = model(X)
-        pred = y_output
-
-        all_preds.append(pred)
+        batch_losses.append(loss)
+        all_preds.append(y_output)
         all_labels.append(y)
 
-    # calculate metrics
-    all_preds = mx.concatenate(all_preds, axis=0)
+    # read loss and compute metrics once at end of epoch
+    train_loss = float(mx.mean(mx.stack(batch_losses)).item())
+    all_preds = mx.concatenate(all_preds, axis=0) * y_std + y_mean
     all_labels = mx.concatenate(all_labels, axis=0)
+    all_preds_np = np.array(all_preds)
+    all_labels_np = np.array(all_labels)
 
-    # unscale predictions
-    all_preds = all_preds * y_std + y_mean
-    # all_labels = all_labels * y_std + y_mean
-
-    # average loss
-    train_loss = total_loss / batch_count
-
-    # mean absolute error
-    train_mae = mean_absolute_error(all_labels, all_preds)
-
-    # root mean squared error
-    train_rmse = root_mean_squared_error(all_labels, all_preds)
-
-    # r-squared
-    train_r2 = r2_score(all_labels, all_preds)
+    train_mae = mean_absolute_error(all_labels_np, all_preds_np)
+    train_rmse = root_mean_squared_error(all_labels_np, all_preds_np)
+    train_r2 = r2_score(all_labels_np, all_preds_np)
 
     return train_loss, train_mae, train_rmse, train_r2
 
@@ -1931,8 +1894,7 @@ def train_mlp_r(model, x_train, y_train, loss_and_grad_fn, optimizer, batch_size
 def test_mlp_r(model, x_test, y_test, criterion, batch_size, y_mean, y_std):
     """Support function for mlx regression model"""
     model.eval()
-    total_loss = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
 
@@ -1946,32 +1908,26 @@ def test_mlp_r(model, x_test, y_test, criterion, batch_size, y_mean, y_std):
             y_batch_scaled = y_batch_scaled.reshape(-1, 1)
 
         loss = mx.mean(criterion(y_output, y_batch_scaled))
-        total_loss += loss.item()
-        batch_count += 1
+        mx.eval(loss, y_output)
 
-        # get predictions and accuracy calculation
+        batch_losses.append(loss)
         all_preds.append(y_output)
         all_labels.append(y)
 
-    # calculate metrics
+    # read loss and compute metrics once at end of epoch
+    test_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_preds = mx.concatenate(all_preds, axis=0)
     all_labels = mx.concatenate(all_labels, axis=0)
 
-    # unscale predictions for MAE/RMSE calculation
     if y_mean is not None and y_std is not None:
         all_preds = all_preds * y_std + y_mean
 
-    # average loss
-    test_loss = total_loss / batch_count
+    all_preds_np = np.array(all_preds)
+    all_labels_np = np.array(all_labels)
 
-    # mean absolute error
-    test_mae = mean_absolute_error(all_labels, all_preds)
-
-    # root mean squared error
-    test_rmse = root_mean_squared_error(all_labels, all_preds)
-
-    # r-squared
-    test_r2 = r2_score(all_labels, all_preds)
+    test_mae = mean_absolute_error(all_labels_np, all_preds_np)
+    test_rmse = root_mean_squared_error(all_labels_np, all_preds_np)
+    test_r2 = r2_score(all_labels_np, all_preds_np)
 
     return test_loss, test_mae, test_rmse, test_r2
 
@@ -1979,10 +1935,7 @@ def test_mlp_r(model, x_test, y_test, criterion, batch_size, y_mean, y_std):
 def train_c(model, train_loader, loss_and_grad_fn, optimizer):
     """Support function for training mlx classification model"""
     model.train()
-    total_loss = 0
-    correct = 0
-    total_samples = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
 
@@ -1992,27 +1945,20 @@ def train_c(model, train_loader, loss_and_grad_fn, optimizer):
 
         # update params
         optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state)
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
-
-        # get predictions from logits
         pred = y_output.argmax(axis=1)
-        correct += (pred == data.y).sum().item()
-        total_samples += data.num_graphs
+        mx.eval(model.parameters(), optimizer.state, loss, pred)
 
-        # store predictions and labels
+        batch_losses.append(loss)
         all_preds.append(pred)
         all_labels.append(data.y)
 
-    # calculate metrics
+    # read scalars and compute metrics once at end of epoch
+    train_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_preds_np = np.array(mx.concatenate(all_preds, axis=0))
     all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
     avg = "binary" if model.classes == 2 else "macro"
 
-    # average loss per batch
-    train_loss = total_loss / batch_count
-    train_acc = correct / total_samples
+    train_acc = float(np.mean(all_preds_np == all_labels_np))
     train_precision = precision_score(all_labels_np, all_preds_np, average=avg, zero_division=0)
 
     return train_loss, train_acc, train_precision
@@ -2021,53 +1967,47 @@ def train_c(model, train_loader, loss_and_grad_fn, optimizer):
 def test_c(model, test_loader, criterion):
     """Support function for testing mlx classification model"""
     model.eval()
-    total_loss = 0
-    correct = 0
-    total_samples = 0
-    batch_count = 0
+    batch_losses = []
     all_predictions = []
     all_proba = []
     all_labels = []
+    uses_edge = (
+        model._has_param("edge_features")
+        if hasattr(model, "_has_param")
+        else ("edge_features" in inspect.signature(model.__call__).parameters)
+    )
 
     for data in test_loader:
         # forward pass
-        # check if edge_features used by model, checks using hte model.__call__
-        sig = inspect.signature(model.__call__)
-        if "edge_features" in sig.parameters and hasattr(data, "edge_features"):
-            try:
+        if uses_edge and hasattr(data, "edge_features"):
+            if hasattr(data, "add_feats"):
                 y_output = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices,
                                  data.add_feats)
-            except AttributeError:
+            else:
                 y_output = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices)
         elif hasattr(data, "add_feats"):
             y_output = model(data.edge_index, data.node_features, data.batch_indices, data.add_feats)
         else:
             y_output = model(data.edge_index, data.node_features, data.batch_indices)
 
-        # calculate loss
+        # calculate loss, predictions, and probabilities
         loss = mx.mean(criterion(y_output, data.y))
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
-
-        # get discrete predictions and probabilities
         predictions = y_output.argmax(axis=1)
         proba = mx.softmax(y_output, axis=1)
-        correct += (predictions == data.y).sum().item()
-        total_samples += data.num_graphs
+        mx.eval(loss, predictions, proba)
 
-        # store for metrics calculation
+        batch_losses.append(loss)
         all_predictions.append(predictions)
         all_proba.append(proba)
         all_labels.append(data.y)
 
-    # convert to numpy for sklearn metrics
+    # read scalars and compute metrics once at end of epoch
+    test_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
     all_predictions_np = np.array(mx.concatenate(all_predictions, axis=0))
     all_proba_np = np.array(mx.concatenate(all_proba, axis=0))
 
-    # average loss per batch
-    test_loss = total_loss / batch_count
-    test_acc = correct / total_samples
+    test_acc = float(np.mean(all_predictions_np == all_labels_np))
     test_precision, mcc, recall, f1, roc_auc = _compute_cls_metrics(
         all_labels_np, all_predictions_np, all_proba_np, model.classes
     )
@@ -2097,13 +2037,11 @@ def _compute_cls_metrics(y_true, y_pred, y_proba, num_classes):
 def train_r(model, train_loader, loss_and_grad_fn, optimizer, y_mean, y_std):
     """Support function for mlx regression model"""
     model.train()
-    total_loss = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
 
     for data in train_loader:
-        # forward pass
         # Reshape targets from (N,) to (N, 1) to match the model output (N, 1)
         y_true_reshaped = mx.expand_dims(data.y, axis=-1)
         y_standardized = (y_true_reshaped - y_mean) / y_std
@@ -2113,35 +2051,22 @@ def train_r(model, train_loader, loss_and_grad_fn, optimizer, y_mean, y_std):
 
         # Update params
         optimizer.update(model, grads)
-        mx.eval(model.parameters(), optimizer.state)
-        total_loss += loss.item()
-        batch_count += 1  # to count batches
+        mx.eval(model.parameters(), optimizer.state, loss, y_output)
 
-        # get prediction
-        pred = y_output
-
-        all_preds.append(pred)
+        batch_losses.append(loss)
+        all_preds.append(y_output)
         all_labels.append(data.y)
 
-    # calculate metrics
-    all_preds = mx.concatenate(all_preds, axis=0)
+    # read loss and compute metrics once at end of epoch
+    train_loss = float(mx.mean(mx.stack(batch_losses)).item())
+    all_preds = mx.concatenate(all_preds, axis=0) * y_std + y_mean
     all_labels = mx.concatenate(all_labels, axis=0)
+    all_preds_np = np.array(all_preds)
+    all_labels_np = np.array(all_labels)
 
-    # unscale predictions
-    all_preds = all_preds * y_std + y_mean
-    # all_labels = all_labels * y_std + y_mean
-
-    # average loss
-    train_loss = total_loss / batch_count
-
-    # mean absolute error
-    train_mae = mean_absolute_error(all_labels, all_preds)
-
-    # root mean squared error
-    train_rmse = root_mean_squared_error(all_labels, all_preds)
-
-    # r-squared
-    train_r2 = r2_score(all_labels, all_preds)
+    train_mae = mean_absolute_error(all_labels_np, all_preds_np)
+    train_rmse = root_mean_squared_error(all_labels_np, all_preds_np)
+    train_r2 = r2_score(all_labels_np, all_preds_np)
 
     return train_loss, train_mae, train_rmse, train_r2
 
@@ -2149,19 +2074,22 @@ def train_r(model, train_loader, loss_and_grad_fn, optimizer, y_mean, y_std):
 def test_r(model, test_loader, criterion, y_mean, y_std):
     """Support function for mlx regression model"""
     model.eval()
-    total_loss = 0
-    batch_count = 0
+    batch_losses = []
     all_preds = []
     all_labels = []
+    uses_edge = (
+        model._has_param("edge_features")
+        if hasattr(model, "_has_param")
+        else ("edge_features" in inspect.signature(model.__call__).parameters)
+    )
 
     for data in test_loader:
         # forward pass
-        sig = inspect.signature(model.__call__)
-        if "edge_features" in sig.parameters and hasattr(data, "edge_features"):
-            try:
+        if uses_edge and hasattr(data, "edge_features"):
+            if hasattr(data, "add_feats"):
                 y_output = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices,
                                  data.add_feats)
-            except AttributeError:
+            else:
                 y_output = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices)
         elif hasattr(data, "add_feats"):
             y_output = model(data.edge_index, data.node_features, data.batch_indices, data.add_feats)
@@ -2172,33 +2100,26 @@ def test_r(model, test_loader, criterion, y_mean, y_std):
         data_y_reshaped = mx.expand_dims(data.y, axis=-1)
         y_target_scaled = (data_y_reshaped - y_mean) / y_std
         loss = mx.mean(criterion(y_output, y_target_scaled))
-        total_loss += loss.item()
-        batch_count += 1
+        mx.eval(loss, y_output)
 
-        # get predictions and accuracy calculation
+        batch_losses.append(loss)
         all_preds.append(y_output)
         all_labels.append(data.y)
 
-    # calculate metrics
+    # read loss and compute metrics once at end of epoch
+    test_loss = float(mx.mean(mx.stack(batch_losses)).item())
     all_preds = mx.concatenate(all_preds, axis=0)
     all_labels = mx.concatenate(all_labels, axis=0)
 
-    # unscale predictions for MAE/RMSE calculation
     if y_mean is not None and y_std is not None:
         all_preds = all_preds * y_std + y_mean
-        # all_labels = all_labels * y_std + y_mean
 
-    # average loss
-    test_loss = total_loss / batch_count
+    all_preds_np = np.array(all_preds)
+    all_labels_np = np.array(all_labels)
 
-    # mean absolute error
-    test_mae = mean_absolute_error(all_labels, all_preds)
-
-    # root mean squared error
-    test_rmse = root_mean_squared_error(all_labels, all_preds)
-
-    # r-squared
-    test_r2 = r2_score(all_labels, all_preds)
+    test_mae = mean_absolute_error(all_labels_np, all_preds_np)
+    test_rmse = root_mean_squared_error(all_labels_np, all_preds_np)
+    test_r2 = r2_score(all_labels_np, all_preds_np)
 
     return test_loss, test_mae, test_rmse, test_r2
 
