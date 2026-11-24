@@ -15,7 +15,7 @@ dependencies:
       - notebook>=7.4.4
       - scikit-learn>=1.6.1
       - torch>=2.1.0
-      - torchinfo>-1.8.0
+      - torchinfo>=1.8.0
       - torch_geometric>=2.6.1
       - shap>=0.48.0
       - optuna>=4.4.0
