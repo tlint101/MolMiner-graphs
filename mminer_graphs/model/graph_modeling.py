@@ -10,7 +10,7 @@ from torch_geometric.nn import GCNConv, GINConv, GINEConv, SAGEConv, GATConv, gl
 from torch_geometric.nn import summary as sum
 from torch_geometric.loader import DataLoader
 from torchinfo import summary as torchinfo_summary
-from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, OPTIMIZERS, F_ACT, \
+from mminer_graphs.model.model_utils import set_seed, seed_worker, make_generator, mol_to_graph, get_device, OPTIMIZERS, F_ACT, \
     state_apple_silicon_device, TORCH_CRITERIONS, TORCH_REGRESSION, TORCH_CLASSIFICATION
 from tqdm import tqdm
 from typing import Optional, Union
@@ -50,7 +50,8 @@ def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, x:
         if isinstance(data, list):
             if batch_size is None:
                 raise ValueError("batch_size needed if data is type 'list'!!")
-            data = DataLoader(data, batch_size=batch_size, shuffle=True, worker_init_fn=set_seed(42))
+            data = DataLoader(data, batch_size=batch_size, shuffle=True, worker_init_fn=seed_worker,
+                              generator=make_generator(42))
         if not isinstance(data, DataLoader):
             raise TypeError("Issue with input data. Must be a list or a DataLoader instance!")
 
@@ -234,7 +235,7 @@ class Base(nn.Module):
         # check dataset input:
         if isinstance(train_loader, list):
             train_loader = DataLoader(train_loader, batch_size=batch_size, shuffle=True,
-                                      worker_init_fn=set_seed(42))  # avoid overfitting to sample order
+                                      worker_init_fn=seed_worker, generator=make_generator(42))  # avoid overfitting to sample order
         if isinstance(test_loader, list):
             test_loader = DataLoader(test_loader, batch_size=batch_size)
 
@@ -1427,7 +1428,7 @@ class MLP_Baseline(nn.Module):
 
         # load data
         train_loader = TorchDataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                       worker_init_fn=set_seed(42))  # avoid overfitting to sample order
+                                       worker_init_fn=seed_worker, generator=make_generator(42))  # avoid overfitting to sample order
         test_loader = TorchDataLoader(test_dataset, batch_size=batch_size)
 
         if device_warn:

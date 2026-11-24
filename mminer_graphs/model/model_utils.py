@@ -203,6 +203,20 @@ def set_seed(seed: int = 42, deterministic: bool = True) -> None:
         torch.backends.cudnn.benchmark = False
 
 
+def seed_worker(worker_id: int) -> None:
+    """Seed NumPy and Python RNG deterministically in PyTorch DataLoader workers."""
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
+def make_generator(seed: int = 42) -> torch.Generator:
+    """Create a seeded torch.Generator for reproducible DataLoader shuffling."""
+    gen = torch.Generator()
+    gen.manual_seed(seed)
+    return gen
+
+
 if __name__ == "__main__":
     import doctest
 

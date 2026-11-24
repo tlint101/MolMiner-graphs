@@ -9,7 +9,7 @@ import optuna
 from optuna.samplers import TPESampler
 from torch import nn
 from mminer_graphs import CrossVal, GINNet, GINENet, GCNNet, EarlyStopping
-from mminer_graphs.model.model_utils import set_seed
+from mminer_graphs.model.model_utils import set_seed, seed_worker, make_generator
 from mminer_graphs.hyperparams.opt_plot import Optimization
 from typing import Optional, Union, Callable, Iterable, Type
 from torch_geometric.loader import DataLoader
@@ -233,7 +233,7 @@ class Torch_opt(Optimization):
         # add data to DataLoader
         batch_size = params.get("batch_size")
         train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True,
-                                  worker_init_fn=set_seed(seed))
+                                  worker_init_fn=seed_worker, generator=make_generator(seed))
         test_loader = DataLoader(test_data, batch_size=batch_size)
 
         model_params = {param_key: params[param_key] for param_key in for_model_params}

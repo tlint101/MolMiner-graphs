@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.loader import DataLoader
-from mminer_graphs.model.model_utils import set_seed, get_device, F_ACT
+from mminer_graphs.model.model_utils import seed_worker, make_generator, get_device, F_ACT
 from tqdm import tqdm
 from typing import Optional, Union, Type
 
@@ -35,7 +35,7 @@ class Base(nn.Module):
         # check dataset input:
         if isinstance(train_loader, list):
             train_loader = DataLoader(train_loader, batch_size=batch_size, shuffle=True,
-                                      worker_init_fn=set_seed(42))  # avoid overfitting to sample order
+                                      worker_init_fn=seed_worker, generator=make_generator(42))  # avoid overfitting to sample order
         if isinstance(test_loader, list):
             test_loader = DataLoader(test_loader, batch_size=batch_size)
 
@@ -86,7 +86,7 @@ class Base(nn.Module):
         self.eval()
         # check dataset input:
         if isinstance(data_loader, list):
-            data_loader = DataLoader(data_loader, batch_size=batch_size, worker_init_fn=set_seed(42))
+            data_loader = DataLoader(data_loader, batch_size=batch_size)
 
         space = []
 

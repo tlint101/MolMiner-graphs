@@ -12,6 +12,18 @@ from mminer_graphs.mlx_models.mlx_utils import set_seed
 from typing import Optional, Union
 
 
+class _DropLastDataloader(Dataloader):
+    """mlx_graphs Dataloader subclass that drops the trailing partial batch each epoch."""
+
+    def __next__(self):
+        if self._current_index + self.batch_size > len(self.dataset):
+            self._current_index = 0
+            if self.shuffle:
+                self._shuffle_indices()
+            raise StopIteration
+        return super().__next__()
+
+
 class CrossVal:
     def __init__(self, model: mlx.nn.Module, dataset: pd.DataFrame, estop: Optional[Union[EarlyStopping, int]] = None):
         self.model = model
@@ -49,8 +61,8 @@ class CrossVal:
         for x in range(cv):
             header = f"{labels}{x}"
 
-            train_indexes = data[data[header] == "train"].index.values.astype(int)
-            test_indexes = data[data[header] == "test"].index.values.astype(int)
+            train_indexes = np.flatnonzero(data[header].to_numpy() == "train")
+            test_indexes = np.flatnonzero(data[header].to_numpy() == "test")
             splits.append((train_indexes, test_indexes))
 
         return splits
@@ -110,7 +122,6 @@ class CrossVal:
             A pd.DataFrame with one row per cv fold and one column per metric. The mean and std of each metric are
             stored separately in self.summary.
         """
-        global loss_list, acc_list, prec_list, mcc_list, recall_list, f1_list, roc_auc_list, r2_list, mae_list, rmse_list, train_graphs, test_graphs
         if dataset is None:
             dataset = self.dataset
         model = self.model
@@ -140,23 +151,17 @@ class CrossVal:
             if isinstance(add_feats, list):
                 add_feats = np.array(add_feats, dtype=np.float32)
 
-        # extract by index
+        # extract by positional index
         for x in tqdm(range(len(cv_index)), desc="CV Round", disable=not pbar):
             train_indices = cv_index[x][0]
             test_indices = cv_index[x][1]
-            train_df = data.loc[train_indices]
-            test_df = data.loc[test_indices]
+            train_df = data.iloc[train_indices]
+            test_df = data.iloc[test_indices]
 
             # slice add_feats
             if add_feats is not None:
                 train_add_feats = add_feats[train_indices]
                 test_add_feats = add_feats[test_indices]
-                # # debugging
-                # print(f"length of train_df: {len(train_df)}")
-                # print(f"length of test_df: {len(test_df)}")
-                # print(f"length of additional features: {len(add_feats)}")
-                # print(f"length of train_add_feats: {len(train_add_feats)}")
-                # print(f"length of test_add_feats: {len(test_add_feats)}")
 
                 # create graphs with add_feats
                 train_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type, add_feats=extra).graph_data for
@@ -169,13 +174,10 @@ class CrossVal:
                 test_graphs = [MolToGraph(smi=smi, label=y, graph_type=graph_type).graph_data for smi, y in
                                zip(test_df[smi_col], test_df[activity_col])]
 
-            # todo move this outside of loop and create chunks to be passed?
-            # load data
-            train_loader = Dataloader(train_graphs, batch_size=batch_size, shuffle=True)
+            # load data (drop trailing partial batch if requested and at least one full batch exists)
+            loader_cls = _DropLastDataloader if (drop_last and len(train_graphs) >= batch_size) else Dataloader
+            train_loader = loader_cls(train_graphs, batch_size=batch_size, shuffle=True)
             test_loader = Dataloader(test_graphs, batch_size=batch_size)
-
-            # # for troubleshooting
-            # print(train_loader.dataset[0])
 
             # set model
             estop = self.early_stopping
@@ -183,14 +185,8 @@ class CrossVal:
             # confirm model fit during cv cycles
             if x == 0:
                 model.store_initial_params()
-                # print(model.parameters())
             elif x > 0:
                 model.reset_params()
-                # print(model.parameters())
-
-            # # for debugging
-            # from mminer_graphs.mlx_models import summary
-            # print(summary(model))
 
             # clear metrics so best epoch is picked from this fold only
             model.metrics = Metrics()
@@ -199,7 +195,11 @@ class CrossVal:
                       wt_decay=wt_decay, pbar=False, verbose=verbose, criterion=criterion, device_warn=device_warn)
 
             # scores
-            best_test_epoch = np.argmin(model.metrics.test_loss)
+            best_test_epoch = (
+                model.metrics.best_epoch
+                if model.metrics.best_epoch is not None
+                else int(np.argmin(model.metrics.test_loss))
+            )
             if model.task == "Classification":
                 loss_list.append(float(model.metrics.test_loss[best_test_epoch]))
                 acc_list.append(float(model.metrics.test_accuracy[best_test_epoch]))

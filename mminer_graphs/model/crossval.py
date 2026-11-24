@@ -8,7 +8,7 @@ from torch_geometric.loader import DataLoader
 from mminer_graphs.model import MolToGraph, EarlyStopping
 from mminer_graphs.model.graph_modeling import Metrics
 from typing import Optional, Union
-from mminer_graphs.model.model_utils import set_seed
+from mminer_graphs.model.model_utils import set_seed, seed_worker, make_generator
 
 
 class CrossVal:
@@ -48,8 +48,8 @@ class CrossVal:
         for x in range(cv):
             header = f"{labels}{x}"
 
-            train_indexes = data[data[header] == "train"].index.values.astype(int)
-            test_indexes = data[data[header] == "test"].index.values.astype(int)
+            train_indexes = np.flatnonzero(data[header].to_numpy() == "train")
+            test_indexes = np.flatnonzero(data[header].to_numpy() == "test")
             splits.append((train_indexes, test_indexes))
 
         return splits
@@ -141,15 +141,14 @@ class CrossVal:
             if isinstance(add_feats, list):
                 add_feats = np.array(add_feats, dtype=np.float32)
 
-        # extract by index
+        # extract by positional index
         for x in tqdm(range(len(cv_index)), desc="CV Round", disable=not pbar):
             train_indices = cv_index[x][0]
             test_indices = cv_index[x][1]
-            train_df = data.loc[train_indices]
-            test_df = data.loc[test_indices]
+            train_df = data.iloc[train_indices]
+            test_df = data.iloc[test_indices]
 
-            # set model (estop is reset inside fit)
-            model = self.model
+            # estop is reset inside fit
             estop = self.early_stopping
 
             # create array of graphs for train/test
@@ -169,7 +168,7 @@ class CrossVal:
 
             # load data
             train_loader = DataLoader(train_graphs, batch_size=batch_size, shuffle=True,
-                                      worker_init_fn=set_seed(seed), drop_last=drop_last)
+                                      worker_init_fn=seed_worker, generator=make_generator(seed), drop_last=drop_last)
             test_loader = DataLoader(test_graphs, batch_size=batch_size, drop_last=False)
 
             # # for troubleshooting
@@ -186,7 +185,11 @@ class CrossVal:
                       wt_decay=wt_decay, pbar=False, verbose=verbose, criterion=criterion, device_warn=device_warn)
 
             # scores
-            best_test_epoch = np.argmin(model.metrics.test_loss)
+            best_test_epoch = (
+                model.metrics.best_epoch
+                if model.metrics.best_epoch is not None
+                else int(np.argmin(model.metrics.test_loss))
+            )
             if model.task == "Classification":
                 loss_list.append(round(float(model.metrics.test_loss[best_test_epoch]), 3))
                 acc_list.append(round(float(model.metrics.test_accuracy[best_test_epoch]), 3))
