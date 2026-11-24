@@ -1313,18 +1313,18 @@ class MLP_Baseline(mlx.nn.Module):
             else:
                 print(f"Model running on CPU. May have issues. Run using 'auto' or 'gpu' instead!")
 
-        # check dataset input and convert ot mx array:
-        if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
-            x_train, x_test, y_train, y_test = (mx.array(x_train), mx.array(x_test), mx.array(y_train),
-                                                mx.array(y_test))
-        # convert list of ndarray to mlx array
-        elif all(isinstance(x, list) for x in (x_train, x_test, y_train, y_test)):
-            x_train, x_test, y_train, y_test = (np.asarray(x_train, dtype=np.float32),
-                                                np.asarray(x_test, dtype=np.float32),
-                                                np.asarray(y_train, dtype=np.float32),
-                                                np.asarray(y_test, dtype=np.float32))
-            x_train, x_test, y_train, y_test = (mx.array(x_train), mx.array(x_test), mx.array(y_train),
-                                                mx.array(y_test))
+        # normalize each dataset input independently (supports ndarray, list, pandas, mx.array)
+        def _to_mx(arr, dtype):
+            if isinstance(arr, mx.array):
+                return arr.astype(dtype)
+            np_dtype = np.int32 if dtype == mx.int32 else np.float32
+            return mx.array(np.asarray(arr, dtype=np_dtype))
+
+        y_dtype = mx.int32 if self.task == "Classification" else mx.float32
+        x_train = _to_mx(x_train, mx.float32)
+        x_test = _to_mx(x_test, mx.float32)
+        y_train = _to_mx(y_train, y_dtype)
+        y_test = _to_mx(y_test, y_dtype)
 
         # reset early_stopping if used
         if estop is not None and isinstance(estop, EarlyStopping):
@@ -1503,13 +1503,13 @@ class MLP_Baseline(mlx.nn.Module):
 
         # check dataset input
         if isinstance(data, mx.array):
-            data = data
-        elif isinstance(data, (list, np.ndarray)):
-            if isinstance(data, list):
-                data = np.asarray(data, dtype=np.float32)
-            data = mx.array(data)
+            data = data.astype(mx.float32)
+        elif isinstance(data, (list, tuple, np.ndarray, pd.DataFrame, pd.Series)):
+            data = mx.array(np.asarray(data, dtype=np.float32))
         else:
-            raise TypeError(f"Input data type {type(data)} not supported! Need np.ndarray, list, or mx.array!")
+            raise TypeError(
+                f"Input data type {type(data)} not supported! Need np.ndarray, list, pandas DataFrame/Series, or mx.array!"
+            )
 
         # evaluation mode
         self.eval()
@@ -1702,7 +1702,7 @@ class MLP(MLP_Baseline):
             self.task = "Regression"
 
         # set dimension of mlp layers
-        self.model = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
+        self.mlp, self.final_mlp = self._build_mlp(input_size, hidden_size, layers, num_classes, dropout, reduce_size)
 
         # info for plot
         self.train_loss = []
@@ -1745,7 +1745,7 @@ class MLP(MLP_Baseline):
         for _ in range(layers - 1):
             # optional, halve hidden size if reduce_size is True
             if reduce_size and layer_num > 0:
-                hidden_size = round(hidden_size / 2)
+                hidden_size = max(1, round(hidden_size / 2))
             self.mlp.append(mlx.nn.Sequential(
                 mlx.nn.Linear(dimension, hidden_size),
                 mlx.nn.BatchNorm(hidden_size),

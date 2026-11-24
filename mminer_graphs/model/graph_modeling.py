@@ -1409,24 +1409,17 @@ class MLP_Baseline(nn.Module):
         # set criterion
         self.criterion = _set_criterion(criterion, self.task, self.classes)
 
-        # check dataset input:
-        if all(isinstance(x, np.ndarray) for x in (x_train, x_test, y_train, y_test)):
-            pass  # can convert to tensor
-        elif all(isinstance(x, list) for x in (x_train, x_test, y_train, y_test)):  # convert list to array
-            x_train, x_test, y_train, y_test = (np.array(x_train), np.array(x_test), np.array(y_train),
-                                                np.array(y_test))
+        # normalize each dataset input independently (supports ndarray, list, pandas, Tensor)
+        def _to_tensor(arr, dtype):
+            if isinstance(arr, torch.Tensor):
+                return arr.to(device=fit_device, dtype=dtype)
+            return torch.as_tensor(np.asarray(arr), dtype=dtype, device=fit_device)
 
-        # convert to tensor
-        if self.task == "Classification":
-            x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
-            y_train = torch.tensor(y_train, dtype=torch.long, device=fit_device)
-            x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
-            y_test = torch.tensor(y_test, dtype=torch.long, device=fit_device)
-        elif self.task == "Regression":
-            x_train = torch.tensor(x_train, dtype=torch.float32, device=fit_device)
-            y_train = torch.tensor(y_train, dtype=torch.float32, device=fit_device)
-            x_test = torch.tensor(x_test, dtype=torch.float32, device=fit_device)
-            y_test = torch.tensor(y_test, dtype=torch.float32, device=fit_device)
+        y_dtype = torch.long if self.task == "Classification" else torch.float32
+        x_train = _to_tensor(x_train, torch.float32)
+        y_train = _to_tensor(y_train, y_dtype)
+        x_test = _to_tensor(x_test, torch.float32)
+        y_test = _to_tensor(y_test, y_dtype)
 
         # wrap tensors into a Dataset
         train_dataset = TensorDataset(x_train, y_train)
@@ -1607,17 +1600,11 @@ class MLP_Baseline(nn.Module):
         model.to(fit_device)
         print(f"Prediction running on {fit_device}")
 
-        # check dataset input:
-        if isinstance(data, np.ndarray):
-            pass
-        elif isinstance(data, list):
-            data = np.array(data)
-
-        if not isinstance(data, torch.Tensor):
-            # convert to tensor
-            data = torch.tensor(data, dtype=torch.float32, device=fit_device)
-        else:
+        # normalize dataset input (supports ndarray, list, pandas, Tensor)
+        if isinstance(data, torch.Tensor):
             data = data.to(device=fit_device, dtype=torch.float32)
+        else:
+            data = torch.as_tensor(np.asarray(data, dtype=np.float32), dtype=torch.float32, device=fit_device)
         # make sure data is 2D
         if data.ndim == 1:
             data = data.unsqueeze(0)  # shape [1, features]
