@@ -1702,11 +1702,15 @@ class MLP(MLP_Baseline):
 
 
 # shuffle and generate minibatches, for MLP model
-def _batch_iterate(batch_size, X, y):
-    perm = mx.array(np.random.permutation(y.shape[0]))
-    for s in range(0, y.shape[0], batch_size):
-        ids = perm[s: s + batch_size]
-        yield X[ids], y[ids]
+def _batch_iterate(batch_size, X, y, shuffle: bool = True):
+    if shuffle:
+        perm = mx.array(np.random.permutation(y.shape[0]))
+        for s in range(0, y.shape[0], batch_size):
+            ids = perm[s: s + batch_size]
+            yield X[ids], y[ids]
+    else:
+        for s in range(0, y.shape[0], batch_size):
+            yield X[s: s + batch_size], y[s: s + batch_size]
 
 
 def train_mlp_c(model, x_train, y_train, optimizer, loss_and_grad_fn, batch_size):
@@ -1765,7 +1769,7 @@ def test_mlp_c(model, x_test, y_test, loss_fn, batch_size):
     all_proba = []
     all_labels = []
 
-    for X, y in _batch_iterate(batch_size, x_test, y_test):
+    for X, y in _batch_iterate(batch_size, x_test, y_test, shuffle=False):
         # forward pass and loss calculation
         y_output = model(X)
         loss = loss_fn(model, X, y)
@@ -1887,16 +1891,16 @@ def test_mlp_r(model, x_test, y_test, criterion, batch_size, y_mean, y_std):
     all_preds = []
     all_labels = []
 
-    # calculate loss on scaled units
-    y_target_scaled = (y_test - y_mean) / y_std
-    if y_target_scaled.ndim == 1:
-        y_target_scaled = y_target_scaled.reshape(-1, 1)
-
-    for X, y in _batch_iterate(batch_size, x_test, y_test):
+    for X, y in _batch_iterate(batch_size, x_test, y_test, shuffle=False):
         # forward pass
         y_output = model(X)
 
-        loss = mx.mean(criterion(y_output, y_target_scaled))
+        # calculate loss on scaled units for this batch
+        y_batch_scaled = (y - y_mean) / y_std
+        if y_batch_scaled.ndim == 1:
+            y_batch_scaled = y_batch_scaled.reshape(-1, 1)
+
+        loss = mx.mean(criterion(y_output, y_batch_scaled))
         total_loss += loss.item()
         batch_count += 1
 
