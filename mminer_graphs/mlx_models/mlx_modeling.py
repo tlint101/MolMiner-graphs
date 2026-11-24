@@ -54,15 +54,16 @@ def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int =
     true_y = np.array(mx.concatenate([batch.y for batch in test_loader], axis=0))
 
     if model.task == "Classification":
-        y_proba = np.array(model.predict(test_loader, batch_size=batch_size, binary=False, cutoff=cutoff,
-                                         return_type=return_type, add_feats=add_feats, pbar=pbar))
-        y_pred = (y_proba >= cutoff).astype(int)
+        if model.classes == 2:
+            y_proba = np.array(model.predict(test_loader, batch_size=batch_size, binary=False, cutoff=cutoff,
+                                             return_type=return_type, add_feats=add_feats, pbar=pbar))
+            y_pred = (y_proba >= cutoff).astype(int)
+        else:
+            y_proba = np.array(model.predict(test_loader, batch_size=batch_size, binary="proba", cutoff=cutoff,
+                                             return_type=return_type, add_feats=add_feats, pbar=pbar))
+            y_pred = np.argmax(y_proba, axis=1)
         acc = accuracy_score(true_y, y_pred)
-        prec = precision_score(true_y, y_pred)
-        recall = recall_score(true_y, y_pred)
-        f1 = f1_score(true_y, y_pred)
-        mcc = matthews_corrcoef(true_y, y_pred)
-        roc_auc = roc_auc_score(true_y, y_proba)
+        prec, mcc, recall, f1, roc_auc = _compute_cls_metrics(true_y, y_pred, y_proba, model.classes)
         metrics_dict = {'Accuracy': [acc], 'Precision': [prec], 'Recall': [recall], 'F1': [f1], 'MCC': [mcc],
                         'ROC_AUC': [roc_auc]}
     elif model.task == "Regression":
@@ -1744,17 +1745,14 @@ def train_mlp_c(model, x_train, y_train, optimizer, loss_and_grad_fn, batch_size
         all_labels.append(y)
 
     # calculate metrics
-    all_preds = mx.concatenate(all_preds, axis=0)
-    all_labels = mx.concatenate(all_labels, axis=0)
-
-    # true positives and false positives
-    tp = ((all_preds == 1) & (all_labels == 1)).sum().item()
-    fp = ((all_preds == 1) & (all_labels == 0)).sum().item()
+    all_preds_np = np.array(mx.concatenate(all_preds, axis=0))
+    all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
+    avg = "binary" if model.classes == 2 else "macro"
 
     # average loss per batch
     train_loss = total_loss / batch_count
     train_acc = correct / total_samples
-    train_precision = tp / (tp + fp + 1e-8)
+    train_precision = precision_score(all_labels_np, all_preds_np, average=avg, zero_division=0)
 
     return train_loss, train_acc, train_precision
 
@@ -1788,33 +1786,17 @@ def test_mlp_c(model, x_test, y_test, loss_fn, batch_size):
         all_proba.append(proba)
         all_labels.append(y)
 
-    # calculate metrics
-    all_predictions = mx.concatenate(all_predictions, axis=0)
-    all_proba = mx.concatenate(all_proba, axis=0)
-    all_labels = mx.concatenate(all_labels, axis=0)
-
-    # true positives and false positives
-    tp = ((all_predictions == 1) & (all_labels == 1)).sum().item()
-    fp = ((all_predictions == 1) & (all_labels == 0)).sum().item()
+    # convert to numpy for sklearn metrics
+    all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
+    all_predictions_np = np.array(mx.concatenate(all_predictions, axis=0))
+    all_proba_np = np.array(mx.concatenate(all_proba, axis=0))
 
     # average loss per batch
     test_loss = total_loss / batch_count
     test_acc = correct / total_samples
-    test_precision = tp / (tp + fp + 1e-8)
-
-    # convert to numpy for sklearn metrics
-    all_labels_np = np.array(all_labels)
-    all_predictions_np = np.array(all_predictions)
-    all_proba_np = np.array(all_proba)
-    # probability for positive class
-    if all_proba_np.ndim > 1:
-        all_proba_np = all_proba_np[:, 1]
-
-    # calculate additional metrics
-    mcc = matthews_corrcoef(all_labels_np, all_predictions_np)
-    recall = recall_score(all_labels_np, all_predictions_np)
-    f1 = f1_score(all_labels_np, all_predictions_np)
-    roc_auc = roc_auc_score(all_labels_np, all_proba_np)
+    test_precision, mcc, recall, f1, roc_auc = _compute_cls_metrics(
+        all_labels_np, all_predictions_np, all_proba_np, model.classes
+    )
 
     return test_loss, test_acc, test_precision, mcc, recall, f1, roc_auc
 
@@ -1962,17 +1944,14 @@ def train_c(model, train_loader, loss_and_grad_fn, optimizer):
         all_labels.append(data.y)
 
     # calculate metrics
-    all_preds = mx.concatenate(all_preds, axis=0)
-    all_labels = mx.concatenate(all_labels, axis=0)
-
-    # true positives and false positives
-    tp = ((all_preds == 1) & (all_labels == 1)).sum().item()
-    fp = ((all_preds == 1) & (all_labels == 0)).sum().item()
+    all_preds_np = np.array(mx.concatenate(all_preds, axis=0))
+    all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
+    avg = "binary" if model.classes == 2 else "macro"
 
     # average loss per batch
     train_loss = total_loss / batch_count
     train_acc = correct / total_samples
-    train_precision = tp / (tp + fp + 1e-8)
+    train_precision = precision_score(all_labels_np, all_preds_np, average=avg, zero_division=0)
 
     return train_loss, train_acc, train_precision
 
@@ -2008,9 +1987,9 @@ def test_c(model, test_loader, criterion):
         total_loss += loss.item()
         batch_count += 1  # to count batches
 
-        # get discrete predictions for accuracy calculation
+        # get discrete predictions and probabilities
         predictions = y_output.argmax(axis=1)
-        proba = mx.softmax(y_output, axis=1)[:, 1]
+        proba = mx.softmax(y_output, axis=1)
         correct += (predictions == data.y).sum().item()
         total_samples += data.num_graphs
 
@@ -2019,32 +1998,38 @@ def test_c(model, test_loader, criterion):
         all_proba.append(proba)
         all_labels.append(data.y)
 
-    # calculate metrics
-    all_predictions = mx.concatenate(all_predictions, axis=0)
-    all_proba = mx.concatenate(all_proba, axis=0)
-    all_labels = mx.concatenate(all_labels, axis=0)
-
-    # true positives and false positives
-    tp = ((all_predictions == 1) & (all_labels == 1)).sum().item()
-    fp = ((all_predictions == 1) & (all_labels == 0)).sum().item()
+    # convert to numpy for sklearn metrics
+    all_labels_np = np.array(mx.concatenate(all_labels, axis=0))
+    all_predictions_np = np.array(mx.concatenate(all_predictions, axis=0))
+    all_proba_np = np.array(mx.concatenate(all_proba, axis=0))
 
     # average loss per batch
     test_loss = total_loss / batch_count
     test_acc = correct / total_samples
-    test_precision = tp / (tp + fp + 1e-8)
-
-    # convert to numpy for sklearn metrics
-    all_labels_np = np.array(all_labels)
-    all_predictions_np = np.array(all_predictions)
-    all_proba_np = np.array(all_proba).squeeze()
-
-    # calculate additional metrics
-    mcc = matthews_corrcoef(all_labels_np, all_predictions_np)
-    recall = recall_score(all_labels_np, all_predictions_np)
-    f1 = f1_score(all_labels_np, all_predictions_np)
-    roc_auc = roc_auc_score(all_labels_np, all_proba_np)
+    test_precision, mcc, recall, f1, roc_auc = _compute_cls_metrics(
+        all_labels_np, all_predictions_np, all_proba_np, model.classes
+    )
 
     return test_loss, test_acc, test_precision, mcc, recall, f1, roc_auc
+
+
+def _compute_cls_metrics(y_true, y_pred, y_proba, num_classes):
+    """Compute binary or macro multi-class evaluation metrics."""
+    is_binary = (num_classes == 2)
+    avg = "binary" if is_binary else "macro"
+    prec = precision_score(y_true, y_pred, average=avg, zero_division=0)
+    recall = recall_score(y_true, y_pred, average=avg, zero_division=0)
+    f1 = f1_score(y_true, y_pred, average=avg, zero_division=0)
+    mcc = matthews_corrcoef(y_true, y_pred)
+    try:
+        if is_binary:
+            proba_pos = y_proba[:, 1] if y_proba.ndim > 1 else y_proba
+            roc_auc = roc_auc_score(y_true, proba_pos)
+        else:
+            roc_auc = roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro")
+    except ValueError:
+        roc_auc = float("nan")
+    return prec, mcc, recall, f1, roc_auc
 
 
 def train_r(model, train_loader, loss_and_grad_fn, optimizer, y_mean, y_std):

@@ -14,8 +14,8 @@ from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, 
     state_apple_silicon_device, TORCH_CRITERIONS, TORCH_REGRESSION, TORCH_CLASSIFICATION
 from tqdm import tqdm
 from typing import Optional, Union
-from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score, mean_absolute_error, r2_score, \
-    root_mean_squared_error
+from sklearn.metrics import matthews_corrcoef, precision_score, recall_score, f1_score, roc_auc_score, \
+    mean_absolute_error, r2_score, root_mean_squared_error
 
 
 def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, x: Optional[Union[list, int]] = None,
@@ -425,7 +425,7 @@ class Base(nn.Module):
                         pred_out = F.softmax(output, dim=1)[:, 1]
                     # multi-class classification
                     elif binary == "multi":
-                        pred_out = F.argmax(output, dim=1)
+                        pred_out = torch.argmax(output, dim=1)
                     # probabilities in float
                     elif binary == "proba":
                         pred_out = F.softmax(output, dim=1)
@@ -1583,7 +1583,7 @@ class MLP_Baseline(nn.Module):
                     pred_out = F.softmax(output, dim=1)[:, 1]
                 # multi-class classification
                 elif binary == "multi":
-                    pred_out = F.argmax(output, dim=1)
+                    pred_out = torch.argmax(output, dim=1)
                 # probabilities in float
                 elif binary == "proba":
                     pred_out = F.softmax(output, dim=1)
@@ -1796,16 +1796,13 @@ def train_mlp_c(model, train_loader, optimizer, criterion, device):
         all_labels.append(y)
 
     # precision values
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-    # true positives
-    tp = ((all_preds == 1) & (all_labels == 1)).sum().item()
-    # false positives
-    fp = ((all_preds == 1) & (all_labels == 0)).sum().item()
+    all_preds = torch.cat(all_preds).cpu().numpy()
+    all_labels = torch.cat(all_labels).cpu().numpy()
+    avg = "binary" if model.classes == 2 else "macro"
 
     model_loss = total_loss / len(train_loader)
     train_acc = correct / total
-    train_pcc = tp / (tp + fp + 1e-8)  # to avoid division by 0
+    train_pcc = precision_score(all_labels, all_preds, average=avg, zero_division=0)
 
     return model_loss, train_acc, train_pcc
 
@@ -1831,7 +1828,7 @@ def test_mlp_c(model, test_loader, criterion, device):
         loss = criterion(out, y)
         total_loss += loss.item()
         pred = out.argmax(dim=1)
-        proba = F.softmax(out, dim=1)[:, 1]
+        proba = F.softmax(out, dim=1)
         correct += (pred == y).sum().item()
         total += y.size(0)
         # all prediction labels and probabilities
@@ -1839,25 +1836,13 @@ def test_mlp_c(model, test_loader, criterion, device):
         all_proba.append(proba)
         all_labels.append(y)
 
-    # precision values
-    predictions = torch.cat(predictions).cpu()
-    all_proba = torch.cat(all_proba).cpu()
-    all_labels = torch.cat(all_labels).cpu()
-
-    # true positives
-    tp = ((predictions == 1) & (all_labels == 1)).sum().item()
-    # false positives
-    fp = ((predictions == 1) & (all_labels == 0)).sum().item()
+    predictions = torch.cat(predictions).cpu().numpy()
+    all_proba = torch.cat(all_proba).cpu().numpy()
+    all_labels = torch.cat(all_labels).cpu().numpy()
 
     test_loss = total_loss / len(test_loader)
     test_acc = correct / total
-    test_prec = tp / (tp + fp + 1e-8)  # to avoid division by 0
-
-    # mcc
-    mcc = matthews_corrcoef(all_labels, predictions)
-    recall = recall_score(all_labels, predictions)
-    f1 = f1_score(all_labels, predictions)
-    roc_auc = roc_auc_score(all_labels, all_proba)
+    test_prec, mcc, recall, f1, roc_auc = _compute_cls_metrics(all_labels, predictions, all_proba, model.classes)
 
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
 
@@ -1991,16 +1976,13 @@ def train_c(model, train_loader, optimizer, criterion, device):
         all_labels.append(data.y)
 
     # precision values
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-    # true positives
-    tp = ((all_preds == 1) & (all_labels == 1)).sum().item()
-    # false positives
-    fp = ((all_preds == 1) & (all_labels == 0)).sum().item()
+    all_preds = torch.cat(all_preds).cpu().numpy()
+    all_labels = torch.cat(all_labels).cpu().numpy()
+    avg = "binary" if model.classes == 2 else "macro"
 
     model_loss = total_loss / len(train_loader)
     train_acc = correct / total
-    train_pcc = tp / (tp + fp + 1e-8)  # to avoid division by 0
+    train_pcc = precision_score(all_labels, all_preds, average=avg, zero_division=0)
 
     return model_loss, train_acc, train_pcc
 
@@ -2028,7 +2010,7 @@ def test_c(model, test_loader, criterion, device):
         loss = criterion(out, data.y)
         total_loss += loss.item()
         pred = out.argmax(dim=1)
-        proba = F.softmax(out, dim=1)[:, 1]
+        proba = F.softmax(out, dim=1)
         correct += (pred == data.y).sum().item()
         total += data.num_graphs
         # all prediction labels and probabilities
@@ -2036,27 +2018,34 @@ def test_c(model, test_loader, criterion, device):
         all_proba.append(proba)
         all_labels.append(data.y)
 
-    # precision values
-    predictions = torch.cat(predictions).cpu()
-    all_proba = torch.cat(all_proba).cpu()
-    all_labels = torch.cat(all_labels).cpu()
-
-    # true positives
-    tp = ((predictions == 1) & (all_labels == 1)).sum().item()
-    # false positives
-    fp = ((predictions == 1) & (all_labels == 0)).sum().item()
+    predictions = torch.cat(predictions).cpu().numpy()
+    all_proba = torch.cat(all_proba).cpu().numpy()
+    all_labels = torch.cat(all_labels).cpu().numpy()
 
     test_loss = total_loss / len(test_loader)
     test_acc = correct / total
-    test_prec = tp / (tp + fp + 1e-8)  # to avoid division by 0
-
-    # mcc
-    mcc = matthews_corrcoef(all_labels, predictions)
-    recall = recall_score(all_labels, predictions)
-    f1 = f1_score(all_labels, predictions)
-    roc_auc = roc_auc_score(all_labels, all_proba)
+    test_prec, mcc, recall, f1, roc_auc = _compute_cls_metrics(all_labels, predictions, all_proba, model.classes)
 
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
+
+
+def _compute_cls_metrics(y_true, y_pred, y_proba, num_classes):
+    """Compute binary or macro multi-class evaluation metrics."""
+    is_binary = (num_classes == 2)
+    avg = "binary" if is_binary else "macro"
+    prec = precision_score(y_true, y_pred, average=avg, zero_division=0)
+    recall = recall_score(y_true, y_pred, average=avg, zero_division=0)
+    f1 = f1_score(y_true, y_pred, average=avg, zero_division=0)
+    mcc = matthews_corrcoef(y_true, y_pred)
+    try:
+        if is_binary:
+            proba_pos = y_proba[:, 1] if y_proba.ndim > 1 else y_proba
+            roc_auc = roc_auc_score(y_true, proba_pos)
+        else:
+            roc_auc = roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro")
+    except ValueError:
+        roc_auc = float("nan")
+    return prec, mcc, recall, f1, roc_auc
 
 
 def train_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
