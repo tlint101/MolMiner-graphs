@@ -9,7 +9,7 @@ from numpy import dtype, ndarray
 from torchviz import make_dot
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader as TorchDataLoader
-from torch_geometric.data import DataLoader
+from torch_geometric.loader import DataLoader
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, roc_auc_score
 from sklearn.metrics import precision_recall_curve, average_precision_score, r2_score, mean_absolute_error, root_mean_squared_error
 from mminer_graphs.model.model_utils import get_device
@@ -88,16 +88,71 @@ class Plots:
             self.y_data = None
             self.tabular = False
 
+    @staticmethod
+    def _resolve_task(model, task: Optional[str], required: bool = True, expected_type: Optional[str] = None) -> Optional[str]:
+        """Validate `task` argument for MultiTaskGNN vs single-task models."""
+        if getattr(model, "task", None) != "MultiTask":
+            if task is not None:
+                raise ValueError("The 'task' parameter is only supported for MultiTaskGNN models.")
+            return None
+
+        if task is None:
+            if required:
+                raise ValueError(f"Please specify task=... for MultiTaskGNN (available tasks: {model.task_names}).")
+            return None
+
+        if task not in model.task_names:
+            raise ValueError(f"Unknown task {task!r}; available tasks: {model.task_names}.")
+
+        if expected_type is not None:
+            actual_type = model.task_configs[task]["type"]
+            if actual_type != expected_type:
+                raise ValueError(
+                    f"Task {task!r} is a '{actual_type}' task, expected '{expected_type}' for this plot."
+                )
+        return task
+
+    @staticmethod
+    def _unshuffled_graph_loader(data, batch_size: int = 1024):
+        """Return a deterministic non-shuffled DataLoader for graph data."""
+        if isinstance(data, TorchDataLoader):
+            return type(data)(data.dataset, batch_size=data.batch_size, shuffle=False)
+        if isinstance(data, list):
+            return DataLoader(data, batch_size=batch_size, shuffle=False)
+        return data
+
+    @staticmethod
+    def _extract_multitask_targets(data, task_idx: int) -> tuple[np.ndarray, np.ndarray]:
+        """Extract column `task_idx` of multi-target labels and boolean observed mask from graph batches."""
+        ys, masks = [], []
+        for batch in data:
+            y = batch.y.detach().cpu().numpy()
+            if y.ndim == 1:
+                y = y[:, None]
+            ys.append(y)
+            if hasattr(batch, "y_mask") and batch.y_mask is not None:
+                m = batch.y_mask.detach().cpu().numpy().astype(bool)
+                if m.ndim == 1:
+                    m = m[:, None]
+                masks.append(m)
+            else:
+                masks.append(~np.isnan(y))
+        y_all = np.concatenate(ys, axis=0)
+        m_all = np.concatenate(masks, axis=0)
+        return y_all[:, task_idx], m_all[:, task_idx].astype(bool)
+
     def curves(self, model: Optional[torch.nn] = None, metrics: list = ["loss", "accuracy"],
                line_color: tuple = ("#1f77b4", "#ff7f0e"), nrows=1, ncols: int = 2, legend_loc: str = "best",
-               clip: float = None, figsize: tuple = (14, 5), title: str = None, savepath: str = None):
+               clip: float = None, figsize: tuple = (14, 5), title: str = None, task: Optional[str] = None,
+               savepath: str = None):
         """
         Plot the model history. This will generate a single plot containing 2 subplots. It can be any combination of
-        'accuracy', 'loss', or 'precision'.
+        'accuracy', 'loss', 'precision', 'mae', 'rmse', or 'r2'. For MultiTaskGNN, pass `task="<task_name>"` to plot
+        per-task metrics, or omit `task` to plot aggregate `metrics=["loss"]`.
         :param model: Optional[torch.nn]
             A trained torch model.
         :param metrics: list
-            A list of metrics to plot. Can only take a combination of 'accuracy', 'loss', or 'precision'.
+            A list of metrics to plot. Can only take a combination of 'accuracy', 'loss', 'precision', 'mae', 'rmse', or 'r2'.
         :param line_color: tuple
             A tuple containing the line colors.
          :param nrows: int
@@ -114,12 +169,17 @@ class Plots:
             Set the title of the figure. If None, the default title will be used.
         :param savepath: str
             Set the savepath for the image.
+        :param task: Optional[str]
+            Task name to plot when `model` is a MultiTaskGNN.
         :return:
         """
         if model is None:
             model = self.model
         if not model.is_fitted:
             raise ValueError("Torch model is not fitted!!!")
+
+        resolved_task = self._resolve_task(model, task, required=False)
+        metrics_obj = model.metrics.tasks[resolved_task] if resolved_task is not None else model.metrics
 
         # normalize and validate requested metrics
         valid_metrics = {'loss', 'accuracy', 'precision', 'mae', 'rmse', 'r2'}
@@ -137,13 +197,14 @@ class Plots:
             if metric not in valid_metrics:
                 raise ValueError("Only 'loss', 'accuracy', 'precision', 'mae', 'rmse', or 'r2' are supported!!")
             train_key, test_key = f"train_{metric}", f"test_{metric}"
-            if train_key not in model.metrics.__dict__ or test_key not in model.metrics.__dict__:
-                raise ValueError(f"Input metric '{metric}' not found on model.metrics!")
-            if len(getattr(model.metrics, train_key)) == 0 or len(getattr(model.metrics, test_key)) == 0:
+            if train_key not in metrics_obj.__dict__ or test_key not in metrics_obj.__dict__:
+                hint = f" Pass task=... (one of {model.task_names}) for per-task metrics." if getattr(model, "task", None) == "MultiTask" and resolved_task is None else ""
+                raise ValueError(f"Input metric '{metric}' not found on model.metrics!{hint}")
+            if len(getattr(metrics_obj, train_key)) == 0 or len(getattr(metrics_obj, test_key)) == 0:
                 raise ValueError(f"No recorded history for metric '{metric}' on this {model.task} model!")
 
         if title is None:
-            title = "Model Training History"
+            title = f"Model Training History — {resolved_task}" if resolved_task is not None else "Model Training History"
 
         metric_labels = {
             "loss": "Loss",
@@ -165,8 +226,8 @@ class Plots:
                     raise ValueError("Number of metrics does not match ncols!")
 
                 # get metrics from model
-                train_metric = getattr(model.metrics, f"train_{input_metrics[x]}")
-                test_metric = getattr(model.metrics, f"test_{input_metrics[x]}")
+                train_metric = getattr(metrics_obj, f"train_{input_metrics[x]}")
+                test_metric = getattr(metrics_obj, f"test_{input_metrics[x]}")
 
                 # optionally clip array to create smoother lines
                 if clip:
@@ -192,8 +253,8 @@ class Plots:
             fig, ax = plt.subplots(figsize=figsize)
             fig.suptitle(title)
             # get metrics from model
-            train_metric = getattr(model.metrics, f"train_{input_metrics[0]}")
-            test_metric = getattr(model.metrics, f"test_{input_metrics[0]}")
+            train_metric = getattr(metrics_obj, f"train_{input_metrics[0]}")
+            test_metric = getattr(metrics_obj, f"test_{input_metrics[0]}")
 
             # optionally clip array to create smoother lines
             if clip:
@@ -221,42 +282,9 @@ class Plots:
                    dot_color: str = "dodgerblue", dot_alpha: float = 0.6, line_color: str = "red", unity: bool = True,
                    metric_output: Optional[Union[list, str, None]] = ['R2', 'MAE', 'RMSE'], legend_loc: str = "best",
                    title: str = None, xlabel: str = None, ylabel: str = None, figsize: tuple = (8, 5),
-                   savepath: str = None):
+                   savepath: str = None, task: Optional[str] = None):
         """
         Generate a linear regression plot using the model and the input data_loader.
-        :param model: Optional[torch.nn]
-            A trained torch model.
-        :param data: Optional[DataLoader, list]
-            A list of metrics to plot. Can only take a combination of 'accuracy', 'loss', or 'precision'.
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param batch_size: int
-            Set the batch size for the Dataloader. Only used if the data given is a list. Only used if data_loader is
-            not given at initialization of PlotsMLX() class.
-        :param metric_output: Optional[Union[list, str, None]]
-            Determine whether to draw the regression metrics with the figure legend.
-        :param dot_color: str
-            Set the color of the scatter plot points. Defaults to 'dodgerblue'.
-        :param dot_alpha: float
-            Set the transparency of the scatter plot points. Defaults to 0.6.
-        :param line_color: str
-            Set the color of the regression line or line of best fit. Defaults to 'red'.
-        :param unity: bool
-            Optional. Draw the line of unity. Line represents (predicted value = actual value). If points fall above, model may
-            over predict. If points fall below, model may under predict. Defaults to True.
-        :param legend_loc: str
-            Set the location of the figure legend. Defaults to 'best'.
-        :param title: str
-            Set the title of the figure. Defaults to None.
-        :param xlabel: str
-            Set the xlabel of the figure. Defaults to None.
-        :param ylabel: str
-            Set the ylabel of the figure. Defaults to None.
-        :param figsize: tuple
-            Set the figure size. Defaults to (8, 5).
-        :param savepath: str
-            Set the path to save the figure. Defaults to None.
-        :return:
         """
 
         if model is None:
@@ -266,8 +294,10 @@ class Plots:
         if add_feats is None:
             add_feats = self.add_feats
 
+        resolved_task = self._resolve_task(model, task, required=True, expected_type="regression")
+
         # make predictions and extract results
-        labels, preds = self._regression_preds(model, data, add_feats)
+        labels, preds = self._regression_preds(model, data, add_feats, batch_size=batch_size, task=resolved_task)
 
         # add metrics computed directly on the plotted (labels, preds)
         if metric_output is not None:
@@ -292,19 +322,16 @@ class Plots:
             y=preds,
             alpha=dot_alpha,
             color=dot_color,
-            # label='Model Predictions'  # Label the scatter points explicitly
         )
-        # scatter_kws={'alpha': dot_alpha, 'color': dot_color},
         sns.regplot(x=labels, y=preds, scatter=False,
                     line_kws={'color': line_color}, label='Regression')
 
         # line of unity
-        # y = x, so both are set to actual labels
-        unity_y = np.linspace(min(labels), max(labels), 20)  # generate evenly spaced plot points
+        unity_y = np.linspace(min(labels), max(labels), 20)
         unity_x = unity_y
         if unity:
-            plt.plot(unity_x,  # x axis
-                     unity_y,  # y-axis
+            plt.plot(unity_x,
+                     unity_y,
                      linestyle='--',
                      linewidth=2,
                      color='0.7',
@@ -321,7 +348,7 @@ class Plots:
         if ylabel is None:
             ylabel = "Prediction"
         if title is None:
-            title = "Prediction vs. Actual"
+            title = f"Prediction vs. Actual — {resolved_task}" if resolved_task is not None else "Prediction vs. Actual"
 
         # plot features
         plt.grid(False)
@@ -340,40 +367,9 @@ class Plots:
                   add_feats: Optional[Union[np.array, list, int]] = None, histogram: bool = True,
                   title: str = None, color: tuple = (None, None), legend_loc: str = "best",
                   figsize: tuple[float, float] = (8, 5), fontsize: int = 12, titlesize: int = 15,
-                  grid: bool = False, savepath: str = None):
+                  grid: bool = False, savepath: str = None, task: Optional[str] = None):
         """
-        Create a residuals plot (actual - predicted) against the predicted values for a regression model. Points above 0
-        are under-predicted and points below 0 are over-predicted. If train_data is not given, only the test set is
-        shown.
-        :param model: Optional[torch.nn]
-            A trained torch regression model.
-        :param data: Optional[Union[DataLoader, list, tuple]]
-            The test dataset. If None, the data given at initialization of Plots() class is used. For tabular MLP
-            models, input a tuple of (features, labels).
-        :param train_data: Optional[Union[DataLoader, list, tuple]]
-            Optional. The train dataset, plotted alongside the test set. For tabular MLP models, input a tuple of
-            (features, labels).
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param histogram: bool
-            Add a histogram of the residuals to the right side of the plot. Defaults to True.
-        :param title: str
-            Title of the plot. If None is given, the default title will be used.
-        :param color: tuple
-            Set color of the points and histogram as (train color, test color).
-        :param legend_loc: str
-            Set the location of the figure legend.
-        :param figsize: tuple
-            Set figure size.
-        :param fontsize: int
-            Font size for axis
-        :param titlesize: int
-            Font size for title
-        :param grid: bool
-            Set grid.
-        :param savepath: str
-            Filepath to save figure.
-        :return:
+        Create a residuals plot (actual - predicted) against the predicted values for a regression model.
         """
         if model is None:
             model = self.model
@@ -382,26 +378,25 @@ class Plots:
         if add_feats is None:
             add_feats = self.add_feats
 
+        resolved_task = self._resolve_task(model, task, required=True, expected_type="regression")
+
         # datasets to plot as (label, data, color). Train set is only added if available.
         datasets = [("Test", data, color[1])]
         if train_data is not None:
             datasets.insert(0, ("Train", train_data, color[0]))
 
-        # datasets to plot as (label, data, color). Train set is optional.
         if histogram:
             fig, (ax, hist_ax) = plt.subplots(1, 2, sharey=True, figsize=figsize, gridspec_kw={"width_ratios": [4, 1]})
         else:
             fig, ax = plt.subplots(figsize=figsize)
 
         for name, current_data, current_color in datasets:
-            # make predictions and extract results for residuals
-            y_true, y_pred = self._regression_preds(model, current_data, add_feats)
+            y_true, y_pred = self._regression_preds(model, current_data, add_feats, task=resolved_task)
             residuals = y_true - y_pred
             r2 = r2_score(y_true, y_pred)
 
             points = ax.scatter(y_pred, residuals, color=current_color, alpha=0.5, label=f"{name} $R^2$ = {r2:.3f}")
             if histogram:
-                # match the histogram color
                 hist_ax.hist(residuals, bins=50, orientation="horizontal", color=points.get_facecolor()[0])
 
         # horizontal line for a perfect prediction
@@ -411,7 +406,8 @@ class Plots:
             hist_ax.set_xlabel("Count", fontsize=fontsize)
             hist_ax.grid(grid)
 
-        if title is None: title = "Residual Plot"
+        if title is None:
+            title = f"Residual Plot — {resolved_task}" if resolved_task is not None else "Residual Plot"
         ax.grid(grid)
         ax.set_xlabel("Predicted", fontsize=fontsize)
         ax.set_ylabel("Residual (Actual - Predicted)", fontsize=fontsize)
@@ -421,11 +417,19 @@ class Plots:
         if savepath: plt.savefig(savepath, dpi=300)
         plt.show()
 
-    def _regression_preds(self, model, data, add_feats):
+    def _regression_preds(self, model, data, add_feats, batch_size: int = 1024, task: Optional[str] = None):
         """
-        Get the flattened values (actual, predicted) for a regression model. Data is a DataLoader or list of graphs.
-        For tabular MLP models, data is a tuple of (features, labels).
+        Get the flattened values (actual, predicted) for a regression model (or regression task of MultiTaskGNN).
+        Data is a DataLoader or list of graphs. For tabular MLP models, data is a tuple of (features, labels).
         """
+        if getattr(model, "task", None) == "MultiTask":
+            loader = self._unshuffled_graph_loader(data, batch_size=batch_size)
+            task_idx = model.task_names.index(task)
+            y_col, obs = self._extract_multitask_targets(loader, task_idx)
+            preds_dict = model.predict(loader, batch_size=batch_size, device=self.device, add_feats=add_feats,
+                                       return_type="dict")
+            return y_col[obs], np.asarray(preds_dict[task])[obs]
+
         if isinstance(data, tuple):  # tabular MLP data
             x, y = data
             preds = model.predict(x, device=self.device, binary=False, return_type="tensor")
@@ -444,29 +448,9 @@ class Plots:
     def confusion_matrix(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                          add_feats: Optional[Union[np.array, list, int]] = None,
                          class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                         title: str = None, cutoff: float = 0.5, savepath: str = None):
+                         title: str = None, cutoff: float = 0.5, savepath: str = None, task: Optional[str] = None):
         """
-        Generate a confusion matrix for binary classification torch models.
-        :param model: Optional[torch.nn]
-            A trained torch model.
-        :param data: DataLoader
-            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
-            model training.
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param class_names: Optional[list]
-            A list of names for the classes. Defaults to cutoff.
-        :param palette: str
-            Set the color palette for the figure.
-        :param figsize: tuple
-            Set the figure size.
-        :param title: str
-            Set the title of the figure. If None given, the default title will be used.
-        :param cutoff: float
-            Set the cutoff for binary predictions.
-        :param savepath: str
-            Set the figure savepath.
-        :return:
+        Generate a confusion matrix for classification torch models (or a classification task of MultiTaskGNN).
         """
 
         if model is None:
@@ -478,39 +462,58 @@ class Plots:
         if add_feats is None:
             add_feats = self.add_feats
 
-        # get labels from test_loader
-        all_labels = []
-        # get labels
-        # for graph data
-        try:
-            for datapoint in data:
-                labels = datapoint.y
-                all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
-        except AttributeError:
-            # for MLP tabular data
-            x_batches = []
-            for x_batch, y_batch in data:
-                x_batches.append(x_batch)
-                all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
-            data = torch.cat(x_batches, dim=0)
+        resolved_task = self._resolve_task(model, task, required=True, expected_type="classification")
 
-        # get prediction labels
-        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
+        if resolved_task is not None:
+            loader = self._unshuffled_graph_loader(data)
+            task_idx = model.task_names.index(resolved_task)
+            y_col, obs = self._extract_multitask_targets(loader, task_idx)
+            num_classes = model.task_configs[resolved_task]["num_classes"]
+            if num_classes == 2:
+                probs = model.predict(loader, device=self.device, binary=False, add_feats=add_feats,
+                                      cutoff=cutoff, return_type="dict")[resolved_task]
+                y_pred = (np.asarray(probs) >= cutoff).astype(int)[obs]
+            else:
+                y_pred = model.predict(loader, device=self.device, binary="multi", add_feats=add_feats,
+                                       return_type="dict")[resolved_task][obs]
+            y_true = y_col[obs].astype(int)
+        else:
+            # get labels from test_loader
+            all_labels = []
+            try:
+                for datapoint in data:
+                    labels = datapoint.y
+                    all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
+            except AttributeError:
+                x_batches = []
+                for x_batch, y_batch in data:
+                    x_batches.append(x_batch)
+                    all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
+                data = torch.cat(x_batches, dim=0)
+
+            y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
+            num_classes = 2
 
         # calculate matrix
         cm_matrix = confusion_matrix(y_true, y_pred)
 
-        # get matrix labels
-        group_names = ['TN', 'FP', 'FN', 'TP']
-        group_counts = [value for value in cm_matrix.flatten()]
-        group_percentages = [f"{round(value * 100, 3)}%" for value in cm_matrix.flatten() / np.sum(cm_matrix)]
-        labels = [f"{v1}\n\n{v2}\n{v3}" for v1, v2, v3 in zip(group_names, group_counts, group_percentages)]
-        labels = np.asarray(labels).reshape(2, 2)
+        if cm_matrix.shape == (2, 2):
+            group_names = ['TN', 'FP', 'FN', 'TP']
+            group_counts = [value for value in cm_matrix.flatten()]
+            group_percentages = [f"{round(value * 100, 3)}%" for value in cm_matrix.flatten() / np.sum(cm_matrix)]
+            labels = np.asarray(
+                [f"{v1}\n\n{v2}\n{v3}" for v1, v2, v3 in zip(group_names, group_counts, group_percentages)]
+            ).reshape(2, 2)
+        else:
+            total = max(int(np.sum(cm_matrix)), 1)
+            labels = np.asarray(
+                [f"{v}\n{round(v * 100 / total, 2)}%" for v in cm_matrix.flatten()]
+            ).reshape(cm_matrix.shape)
 
         if title is None:
-            title = "Confusion Matrix on Test Dataset"
+            title = f"Confusion Matrix — {resolved_task}" if resolved_task is not None else "Confusion Matrix on Test Dataset"
         if class_names is None:
-            class_names = ['0', '1']
+            class_names = [str(i) for i in range(cm_matrix.shape[0])]
 
         # plot
         fig, ax = plt.subplots(figsize=figsize)
@@ -529,30 +532,10 @@ class Plots:
     def classification_report(self, model: Optional[torch.nn] = None, data: Optional[DataLoader] = None,
                               add_feats: Optional[Union[np.array, list, int]] = None,
                               class_names: Optional[list[str]] = None, palette: str = "Blues", figsize: tuple = (8, 6),
-                              title: str = None, cutoff: float = 0.5, savepath: str = None):
+                              title: str = None, cutoff: float = 0.5, savepath: str = None,
+                              task: Optional[str] = None):
         """
-        Generate a classification report for binary classification torch models.
-        :param model: Optional[torch.nn]
-            A trained torch model.
-        :param data: DataLoader
-            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
-            model training.
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param class_names: Optional[list]
-            A list of names for the classes. Defaults to cutoff.
-        :param palette: str
-            Set the color palette for the figure.
-        :param figsize: tuple
-            Set the figure size.
-        :param title: str
-            Set the title of the figure. If None given, the default title will be used.
-        :param cutoff: float
-            Set the cutoff for binary predictions.
-        :param savepath: str
-            Set the figure savepath.
-        :return:
-        :return:
+        Generate a classification report for classification torch models (or a classification task of MultiTaskGNN).
         """
         if model is None:
             model = self.model
@@ -560,31 +543,42 @@ class Plots:
             raise ValueError("Torch model is not fitted!!!")
         if data is None:
             data = self.data
-        if title is None:
-            title = "Classification Report"
-        if class_names is None:
-            class_names = ['0', '1']
         if add_feats is None:
             add_feats = self.add_feats
 
-        # get labels from test_loader
-        all_labels = []
-        # get labels
-        # for graph data
-        try:
-            for datapoint in data:
-                labels = datapoint.y
-                all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
-        except AttributeError:
-            # for MLP tabular data
-            x_batches = []
-            for x_batch, y_batch in data:
-                x_batches.append(x_batch)
-                all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
-            data = torch.cat(x_batches, dim=0)
+        resolved_task = self._resolve_task(model, task, required=True, expected_type="classification")
 
-        # get prediction labels
-        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
+        if resolved_task is not None:
+            loader = self._unshuffled_graph_loader(data)
+            task_idx = model.task_names.index(resolved_task)
+            y_col, obs = self._extract_multitask_targets(loader, task_idx)
+            num_classes = model.task_configs[resolved_task]["num_classes"]
+            if num_classes == 2:
+                probs = model.predict(loader, device=self.device, binary=False, add_feats=add_feats,
+                                      cutoff=cutoff, return_type="dict")[resolved_task]
+                y_pred = (np.asarray(probs) >= cutoff).astype(int)[obs]
+            else:
+                y_pred = model.predict(loader, device=self.device, binary="multi", add_feats=add_feats,
+                                       return_type="dict")[resolved_task][obs]
+            y_true = y_col[obs].astype(int)
+            if class_names is None:
+                class_names = [str(i) for i in range(num_classes)]
+        else:
+            if class_names is None:
+                class_names = ['0', '1']
+            all_labels = []
+            try:
+                for datapoint in data:
+                    labels = datapoint.y
+                    all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
+            except AttributeError:
+                x_batches = []
+                for x_batch, y_batch in data:
+                    x_batches.append(x_batch)
+                    all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
+                data = torch.cat(x_batches, dim=0)
+
+            y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
 
         # calculate classification report
         report_dict = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
@@ -592,11 +586,10 @@ class Plots:
         # remove junk data
         keys_to_remove = {'accuracy', 'macro avg', 'weighted avg'}
         filtered_dict = {k: v for k, v in report_dict.items() if k not in keys_to_remove}
-        # add dict to dataframe
         df = pd.DataFrame(filtered_dict).T[['precision', 'recall', 'f1-score']]
 
         if title is None:
-            title = "Classification Report"
+            title = f"Classification Report — {resolved_task}" if resolved_task is not None else "Classification Report"
 
         # plot
         fig = plt.figure(figsize=figsize)
@@ -640,30 +633,10 @@ class Plots:
     def roc_curve(self, model: Optional[Union[torch.nn, list[torch.nn]]] = None, data: Optional[DataLoader] = None,
                   add_feats: Optional[Union[np.array, list, int]] = None,
                   model_names: Optional[list] = None, color: Union[str, list] = "orange", figsize: tuple = (8, 6),
-                  title: str = None, binary: Union[bool, float, str] = False, savepath: str = None):
+                  title: str = None, binary: Union[bool, float, str] = False, savepath: str = None,
+                  task: Optional[str] = None):
         """
-        Generate a ROC curve for torch classification models. If a list of torch models are given, all curves will be
-        plotted on a single plot.
-        :param model: Optional[Union[torch.nn, list[torch.nn]]]
-            Optional. A trained torch model.
-        :param data: Optional[DataLoader]
-            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
-            model training.
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param model_names: Optional[list]
-            A list of model names. Only used if model is set to a list of torch models.
-        :param color: Union[str, list]
-            Set the color palette for the figure.
-        :param figsize: tuple
-            Set the figure size.
-        :param title: str
-            Set the title of the figure. If None given, the default title will be used.
-        :param binary: Union[bool, float, str]
-            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
-        :param savepath: str
-            Set the figure savepath.
-        :return:
+        Generate a ROC curve for torch classification models (or a binary classification task of MultiTaskGNN).
         """
         if model is None:
             model = self.model
@@ -672,78 +645,96 @@ class Plots:
                 raise ValueError("Torch model is not fitted!!!")
         if data is None:
             data = self.data
-        if title is None:
-            title = "Receiver Operating Characteristic (ROC)"
         if add_feats is None:
             add_feats = self.add_feats
 
-        # get labels from test_loader
-        all_labels = []
-        # get labels
-        for datapoint in data:
-            if hasattr(datapoint, "y"):
-                label_tensor = datapoint.y
-            elif hasattr(datapoint, "label"):
-                label_tensor = datapoint.label
-            elif hasattr(datapoint, "graph_labels"):
-                label_tensor = datapoint.graph_labels
-            # if input is tabular
-            elif self.tabular:
-                label_tensor = datapoint[1]
-                data = self.x_data  # ensure data is tabular
-            else:
-                raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+        first_model = model[0] if isinstance(model, list) else model
+        resolved_task = self._resolve_task(first_model, task, required=True, expected_type="classification")
+        if resolved_task is not None and first_model.task_configs[resolved_task]["num_classes"] != 2:
+            raise ValueError(f"ROC curve requires a binary classification task (task {resolved_task!r} has "
+                             f"{first_model.task_configs[resolved_task]['num_classes']} classes).")
 
-            # move to cpu
-            if isinstance(label_tensor, torch.Tensor):
-                label_np = label_tensor.detach().cpu().numpy().flatten()
-                all_labels.extend(label_np)
-            else:
-                all_labels.append(label_tensor)
+        if title is None:
+            title = (f"Receiver Operating Characteristic (ROC) — {resolved_task}"
+                     if resolved_task is not None else "Receiver Operating Characteristic (ROC)")
 
-        all_labels = np.array(all_labels).squeeze()
+        obs_mask = None
+        if resolved_task is not None:
+            data = self._unshuffled_graph_loader(data)
+            task_idx = first_model.task_names.index(resolved_task)
+            y_col, obs_mask = self._extract_multitask_targets(data, task_idx)
+            all_labels = y_col[obs_mask].astype(int)
+        else:
+            all_labels = []
+            for datapoint in data:
+                if hasattr(datapoint, "y"):
+                    label_tensor = datapoint.y
+                elif hasattr(datapoint, "label"):
+                    label_tensor = datapoint.label
+                elif hasattr(datapoint, "graph_labels"):
+                    label_tensor = datapoint.graph_labels
+                elif self.tabular:
+                    label_tensor = datapoint[1]
+                    data = self.x_data
+                else:
+                    raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+
+                if isinstance(label_tensor, torch.Tensor):
+                    label_np = label_tensor.detach().cpu().numpy().flatten()
+                    all_labels.extend(label_np)
+                else:
+                    all_labels.append(label_tensor)
+
+            all_labels = np.array(all_labels).squeeze()
 
         # plot
         fig = plt.figure(figsize=figsize)
 
         if isinstance(model, list):
             for x, name, c in zip(model, model_names, color):
-                try:
-                    predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                            return_type="list")
-                except TypeError as e:
-                    if "add_feats" in str(e):
-                        predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
-                    else:
-                        raise
-                # get false/true positive rate and thresholds
+                if resolved_task is not None:
+                    predictions = np.asarray(
+                        x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                  return_type="dict")[resolved_task]
+                    )[obs_mask]
+                else:
+                    try:
+                        predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                                return_type="list")
+                    except TypeError as e:
+                        if "add_feats" in str(e):
+                            predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                        else:
+                            raise
                 fpr, tpr, thresholds = roc_curve(all_labels, predictions)
                 roc_auc = roc_auc_score(all_labels, predictions)
                 plt.plot(fpr, tpr, color=c, lw=2, label=f"{name} {roc_auc:.3f}")
         else:
-            try:
-                predictions = model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                            return_type="list")
-            except TypeError as e:
-                if "add_feats" in str(e):
-                    predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
-                else:
-                    raise e
-            # get false/true positive rate and thresholds
+            if resolved_task is not None:
+                predictions = np.asarray(
+                    model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                  return_type="dict")[resolved_task]
+                )[obs_mask]
+            else:
+                try:
+                    predictions = model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                                return_type="list")
+                except TypeError as e:
+                    if "add_feats" in str(e):
+                        predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
+                    else:
+                        raise e
             fpr, tpr, thresholds = roc_curve(all_labels, predictions)
             roc_auc = roc_auc_score(all_labels, predictions)
 
-            # identify the best threshold using Youden's J statistic
             j = tpr - fpr
             x = np.argmax(j)
             best_threshold = thresholds[x]
             b_threshold = f"Best threshold: {best_threshold:.3f}"
 
-            # only save for single models
             self.thresholds = best_threshold
             self.best_threshold = b_threshold
 
-            # plot
             plt.plot(fpr, tpr, color=color, lw=2, label=f"ROC curve {roc_auc:.3f}")
 
         plt.plot([0, 1.05], [0, 1.05], color="gray", linestyle=(0, (5, 10)), lw=1)
@@ -763,33 +754,10 @@ class Plots:
     def pr_curve(self, model: Optional[Union[torch.nn, list[torch.nn]]] = None, data: Optional[DataLoader] = None,
                  add_feats: Optional[Union[np.array, list, int]] = None, model_names: Optional[list] = None,
                  chance_level: bool = False, color: Union[str, list] = "orange", figsize: tuple = (8, 6),
-                 title: str = None, binary: Union[bool, float, str] = False, savepath: str = None):
+                 title: str = None, binary: Union[bool, float, str] = False, savepath: str = None,
+                 task: Optional[str] = None):
         """
-        Generate a Precision=Recall curve for torch classification models. If a list of torch models are given, all
-        curves will be plotted on a single plot.
-        :param model: Optional[Union[torch.nn, list[torch.nn]]]
-            Optional. A trained torch model.
-        :param data: Optional[DataLoader]
-            A test/validation set for the model. Must be converted into the same format DataLoader as used during torch
-            model training.
-        :param add_feats: Optional[Union[np.array, list, int]]
-            The number of additional features to be added. Must be the same as what was given during training.
-        :param model_names: Optional[list]
-            A list of model names. Only used if model is set to a list of torch models.
-        :param chance_level: bool
-            Whether to plot a chance level curve. This is the positive label predictions over total samples. The chance
-            level indicates precision of randomly guessed positives labels.
-        :param color: Union[str, list]
-            Set the color palette for the figure.
-        :param figsize: tuple
-            Set the figure size.
-        :param title: str
-            Set the title of the figure. If None given, the default title will be used.
-        :param binary: Union[bool, float, str]
-            Set the prediction output. Can only accept 'True', 'multi', or a float as inputs.
-        :param savepath: str
-            Set the figure savepath.
-        :return:
+        Generate a Precision-Recall curve for torch classification models (or a binary classification task of MultiTaskGNN).
         """
         if model is None:
             model = self.model
@@ -798,68 +766,87 @@ class Plots:
                 raise ValueError("Torch model is not fitted!!!")
         if data is None:
             data = self.data
-        if title is None:
-            title = "Precision-Recall Curve"
         if add_feats is None:
             add_feats = self.add_feats
 
-        # get labels from test_loader
-        all_labels = []
-        # get labels
-        for datapoint in data:
-            if hasattr(datapoint, "y"):
-                label_tensor = datapoint.y
-            elif hasattr(datapoint, "label"):
-                label_tensor = datapoint.label
-            elif hasattr(datapoint, "graph_labels"):
-                label_tensor = datapoint.graph_labels
-            # if input is tabular
-            elif self.tabular:
-                label_tensor = datapoint[1]
-                data = self.x_data  # ensure data is tabular
-            else:
-                raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+        first_model = model[0] if isinstance(model, list) else model
+        resolved_task = self._resolve_task(first_model, task, required=True, expected_type="classification")
+        if resolved_task is not None and first_model.task_configs[resolved_task]["num_classes"] != 2:
+            raise ValueError(f"PR curve requires a binary classification task (task {resolved_task!r} has "
+                             f"{first_model.task_configs[resolved_task]['num_classes']} classes).")
 
-            # move to cpu
-            if isinstance(label_tensor, torch.Tensor):
-                label_np = label_tensor.detach().cpu().numpy().flatten()
-                all_labels.extend(label_np)
-            else:
-                all_labels.append(label_tensor)
+        if title is None:
+            title = f"Precision-Recall Curve — {resolved_task}" if resolved_task is not None else "Precision-Recall Curve"
 
-        all_labels = np.array(all_labels).squeeze()
+        obs_mask = None
+        if resolved_task is not None:
+            data = self._unshuffled_graph_loader(data)
+            task_idx = first_model.task_names.index(resolved_task)
+            y_col, obs_mask = self._extract_multitask_targets(data, task_idx)
+            all_labels = y_col[obs_mask].astype(int)
+        else:
+            all_labels = []
+            for datapoint in data:
+                if hasattr(datapoint, "y"):
+                    label_tensor = datapoint.y
+                elif hasattr(datapoint, "label"):
+                    label_tensor = datapoint.label
+                elif hasattr(datapoint, "graph_labels"):
+                    label_tensor = datapoint.graph_labels
+                elif self.tabular:
+                    label_tensor = datapoint[1]
+                    data = self.x_data
+                else:
+                    raise ValueError("Cannot find labels! Only looking for 'y', 'label', or 'graph_labels'")
+
+                if isinstance(label_tensor, torch.Tensor):
+                    label_np = label_tensor.detach().cpu().numpy().flatten()
+                    all_labels.extend(label_np)
+                else:
+                    all_labels.append(label_tensor)
+
+            all_labels = np.array(all_labels).squeeze()
 
         # plot
         fig = plt.figure(figsize=figsize)
 
         if isinstance(model, list):
             for x, name, c in zip(model, model_names, color):
-                try:
-                    predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                            return_type="list")
-                except TypeError as e:
-                    if "add_feats" in str(e):
-                        predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
-                    else:
-                        raise
-                # get prec/recall/pr_threshold
+                if resolved_task is not None:
+                    predictions = np.asarray(
+                        x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                  return_type="dict")[resolved_task]
+                    )[obs_mask]
+                else:
+                    try:
+                        predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                                return_type="list")
+                    except TypeError as e:
+                        if "add_feats" in str(e):
+                            predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                        else:
+                            raise
                 prec, recall, pr_threshold = precision_recall_curve(all_labels, predictions)
                 avg_prec = average_precision_score(all_labels, predictions)
                 plt.plot(recall, prec, color=c, lw=2, label=f"{name} {avg_prec:.3f}")
         else:
-            try:
-                predictions = model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                            return_type="list")
-            except TypeError as e:
-                if "add_feats" in str(e):
-                    predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
-                else:
-                    raise e
-            # get prec/recall/pr_threshold
+            if resolved_task is not None:
+                predictions = np.asarray(
+                    model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                  return_type="dict")[resolved_task]
+                )[obs_mask]
+            else:
+                try:
+                    predictions = model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                                return_type="list")
+                except TypeError as e:
+                    if "add_feats" in str(e):
+                        predictions = model.predict(data=data, binary=binary, device=self.device, return_type="list")
+                    else:
+                        raise e
             prec, recall, pr_threshold = precision_recall_curve(all_labels, predictions)
             avg_prec = average_precision_score(all_labels, predictions)
 
-            # plot
             plt.plot(recall, prec, color=color, lw=2, label=f"Precision-Recall Avg: {avg_prec:.3f}")
 
         if chance_level:
@@ -870,8 +857,6 @@ class Plots:
         plt.ylabel("Precision")
         plt.title(title)
         plt.legend(loc="best")
-        # plt.xlim([0, 1])
-        # plt.ylim([0, 1])
         plt.tight_layout()
 
         if savepath is not None:

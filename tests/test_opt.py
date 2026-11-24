@@ -1,8 +1,9 @@
 import optuna
 import pytest
 
-from mminer_graphs import GATNet, GCNNet, GINENet, GINNet, GSAGENet
-from mminer_graphs.hyperparams.torch_opt import MODEL_PARAM_KEYS, Torch_opt
+from mminer_graphs import GATNet, GCNNet, GINENet, GINNet, GSAGENet, MultiTaskGNN
+from mminer_graphs.hyperparams.torch_opt import ENCODER_PARAM_KEYS, MODEL_PARAM_KEYS, Torch_opt
+from mminer_graphs.model import GAT, GCN, GIN, GINE, GSAGE
 from mminer_graphs.model.model_utils import mol_to_graph
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -73,3 +74,107 @@ def test_torch_opt_regression_non_atom_graphs_and_build(bace_df):
         graph_type="PharmacophoreGraph",
     )
     assert study_min.best_value >= 0.0
+
+
+@pytest.mark.parametrize("enc_cls", [GCN, GIN, GINE, GSAGE, GAT])
+def test_torch_opt_multitask_all_encoders_and_build(tmp_path, bace_df, enc_cls):
+    assert enc_cls in ENCODER_PARAM_KEYS
+    mixed_tasks = {
+        "Class": {"type": "classification", "num_classes": 2},
+        "AlogP": {"type": "regression"},
+        "PSA": {"type": "regression", "criterion": "huber"},
+    }
+    topt = Torch_opt(model=MultiTaskGNN, direction="maximize")
+    extra_opt = {"heads": (1, 2)} if enc_cls is GAT else {}
+    study = topt.opt_model(
+        encoder_cls=enc_cls,
+        tasks=mixed_tasks,
+        n_trials=2,
+        dataset=bace_df,
+        smi_col="smiles",
+        activity_col=["Class", "AlogP", "PSA"],
+        graph_layers=2,
+        hidden_dims=(16, 16),
+        graph_dropout=(0.1, 0.1),
+        mlp_dropout=(0.1, 0.1),
+        shared_mlp_layers=(0, 1),
+        head_mlp_layers=(1, 2),
+        loss_weighting=["equal", "uncertainty"],
+        epochs=(2, 2),
+        batch_size=(10, 10),
+        optimizer=["adam"],
+        lr=(1e-3, 1e-3),
+        wt_decay=(1e-5, 1e-5),
+        device="cpu",
+        cv=2,
+        progress=False,
+        n_jobs=1,
+        seed=42,
+        **extra_opt,
+    )
+    assert 0.0 < study.best_value <= 1.0
+    assert {"shared_mlp_layers", "head_mlp_layers", "loss_weighting"}.issubset(study.best_params)
+
+    # Save best params JSON and build + fit the optimized MultiTaskGNN
+    if enc_cls is GINE:
+        json_path = tmp_path / "mt_best.json"
+        best_params = topt.best_solutions(study, savepath=str(json_path))
+        snapshot = dict(best_params)
+        y_mat = bace_df[["Class", "AlogP", "PSA"]].to_numpy(dtype=float)
+        graphs = [mol_to_graph(s, row, graph_type="AtomGraph") for s, row in zip(bace_df["smiles"], y_mat)]
+        built = topt.build_opt_model(
+            model=MultiTaskGNN,
+            encoder_cls=GINE,
+            tasks=mixed_tasks,
+            train_data=graphs[:30],
+            test_data=graphs[30:],
+            params=str(json_path),
+            device="cpu",
+            estop=5,
+        )
+        assert isinstance(built, MultiTaskGNN) and built.is_fitted is True
+        assert best_params == snapshot
+        preds = built.predict(graphs[30:], batch_size=10, device="cpu", return_type="dataframe")
+        assert list(preds.columns) == ["Class", "AlogP", "PSA"]
+
+
+def test_torch_opt_multitask_primary_task_and_guards(bace_df):
+    mixed_tasks = {
+        "Class": {"type": "classification", "num_classes": 2},
+        "AlogP": {"type": "regression"},
+        "PSA": {"type": "regression"},
+    }
+    # Primary classification task with accuracy+loss blend (activity_col omitted -> auto-inferred from tasks)
+    topt = Torch_opt(model=MultiTaskGNN, precision_weight=0.2, loss_weight=0.5, direction="maximize")
+    study = topt.opt_model(
+        encoder_cls=GCN,
+        tasks=mixed_tasks,
+        primary_task="Class",
+        n_trials=1,
+        dataset=bace_df,
+        smi_col="smiles",
+        graph_layers=2,
+        hidden_dims=(16, 16),
+        graph_dropout=(0.0, 0.0),
+        mlp_dropout=(0.0, 0.0),
+        shared_mlp_layers=1,
+        head_mlp_layers=1,
+        loss_weighting="uncertainty",
+        epochs=(2, 2),
+        batch_size=(10, 10),
+        optimizer=["adam"],
+        lr=(1e-3, 1e-3),
+        wt_decay=(1e-5, 1e-5),
+        device="cpu",
+        cv=2,
+        progress=False,
+        n_jobs=1,
+        seed=42,
+    )
+    assert 0.0 <= study.best_value <= 1.0
+    assert study.best_params["loss_weighting"] == "uncertainty"
+
+    with pytest.raises(ValueError, match="Unknown primary_task"):
+        topt.opt_model(encoder_cls=GCN, tasks=mixed_tasks, primary_task="Nope", dataset=bace_df)
+    with pytest.raises(ValueError, match="encoder_cls"):
+        topt.opt_model(encoder_cls=None, tasks=mixed_tasks, dataset=bace_df)

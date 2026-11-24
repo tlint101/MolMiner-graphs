@@ -17,7 +17,8 @@ from mminer_graphs.model.graph_modeling import (
     test_c as eval_cls,
     test_r as eval_reg,
 )
-from mminer_graphs.model.latent_space import GAT, GCN, GINE, GSAGE
+from mminer_graphs.model import GIN as ExportedGIN
+from mminer_graphs.model.latent_space import GAT, GCN, GIN, GINE, GSAGE
 from mminer_graphs.model.model_utils import mol_to_graph, set_seed
 
 
@@ -210,17 +211,38 @@ def test_mlp_mixed_inputs(bace_tabular):
 @pytest.mark.parametrize(
     "enc_cls,extra_kwargs,expected_dim",
     [
+        (GCN, {"reduce_graph": False}, 16),
         (GCN, {"reduce_graph": True}, 8),
+        (GIN, {"reduce_graph": False}, 16),
+        (GIN, {"reduce_graph": True}, 8),
+        (GINE, {"edge_feat_dim": 16, "reduce_graph": False}, 16),
         (GINE, {"edge_feat_dim": 16, "reduce_graph": True}, 8),
+        (GSAGE, {"reduce_graph": False}, 16),
         (GSAGE, {"reduce_graph": True}, 8),
+        (GAT, {"edge_feat_dim": 16, "heads": 2, "reduce_graph": False}, 32),
         (GAT, {"edge_feat_dim": 16, "heads": 2, "reduce_graph": True}, 16),
     ],
 )
 def test_latent_space_encoders(bace_cls_graphs, enc_cls, extra_kwargs, expected_dim):
+    assert ExportedGIN is GIN
     tr_g, te_g = bace_cls_graphs
     enc = enc_cls(node_dim=142, hidden_dim=16, graph_layers=2, **extra_kwargs)
     assert not hasattr(enc, "train_loss")
+    assert enc.out_dim == expected_dim
     tx, ty, vx, vy = enc.split_graph_space(tr_g, te_g, batch_size=10, device="cpu")
     sp = enc.extract_graph_space(te_g, batch_size=10, device="cpu")
     assert tx.shape == (30, expected_dim) and vx.shape == (10, expected_dim)
     assert sp.shape == (10, expected_dim) and len(ty) == 30 and len(vy) == 10
+
+
+def test_latent_space_encoder_reset_params(bace_cls_graphs):
+    tr_g, _ = bace_cls_graphs
+    enc = GIN(node_dim=142, hidden_dim=16, graph_layers=2, reduce_graph=True)
+    enc.train()
+    batch = next(iter(DataLoader(tr_g, batch_size=10)))
+    _ = enc(batch)  # updates BatchNorm running stats
+    before = {k: v.detach().clone() for k, v in enc.named_parameters()}
+    enc.reset_params()
+    changed = [k for k, v in enc.named_parameters() if "weight" in k and not torch.allclose(v, before[k])]
+    assert len(changed) >= 2
+    assert torch.allclose(enc.normalization[0].running_mean, torch.zeros_like(enc.normalization[0].running_mean))

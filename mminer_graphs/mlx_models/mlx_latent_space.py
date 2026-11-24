@@ -4,6 +4,7 @@ from tqdm import tqdm
 from typing import Optional, Union
 import mlx.nn
 import mlx.core as mx
+from mlx.utils import tree_flatten, tree_unflatten
 from mlx_graphs.loaders import Dataloader
 from mlx_graphs.nn import GCNConv, GINConv, SAGEConv, GATConv, global_mean_pool, global_add_pool, global_max_pool
 from mminer_graphs.mlx_models.mlx_utils import get_device, MLX_ACT
@@ -13,7 +14,29 @@ class Base(mlx.nn.Module):
     def __init__(self):
         super().__init__()
         self.is_fitted = None
-        self.initial_params = None
+        self._initial_params = None
+
+    def _has_param(self, param_name: str) -> bool:
+        """Cache and check whether __call__ accepts param_name without per-batch reflection."""
+        call_params = getattr(self, "_call_params", None)
+        if call_params is None:
+            call_params = frozenset(inspect.signature(self.__call__).parameters)
+            self._call_params = call_params
+        return param_name in call_params
+
+    def store_initial_params(self):
+        """Store a snapshot of initial parameters for later reset."""
+        if self._initial_params is None:
+            mx.eval(self.parameters())
+            self._initial_params = [(k, mx.array(v)) for k, v in tree_flatten(self.parameters())]
+
+    def reset_params(self):
+        """Reset encoder weights to the snapshot saved by store_initial_params()."""
+        if self._initial_params is None:
+            raise ValueError("Initial parameters not stored! Call store_initial_params() first!")
+        restored = [(k, mx.array(v)) for k, v in self._initial_params]
+        self.update(tree_unflatten(restored))
+        mx.eval(self.parameters())
 
     def split_graph_space(self, train_loader: Union[Dataloader, list], test_loader: Union[Dataloader, list],
                           batch_size: int = 1, device: str = "auto"):
@@ -49,19 +72,27 @@ class Base(mlx.nn.Module):
 
         # evaluate
         model.eval()
-        sig = inspect.signature(model.__call__)
+        uses_edge_features = model._has_param("edge_features")
         for data in tqdm(train_loader, desc="Converting training graph data"):
-            if "edge_features" in sig.parameters and hasattr(data, "edge_features"):  # for edge features
-                latent_space = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices)
-            else:
-                latent_space = model(data.edge_index, data.node_features, data.batch_indices)
+            model_args = {
+                "edge_index": data.edge_index,
+                "x": data.node_features,
+                "batch_indices": data.batch_indices,
+            }
+            if uses_edge_features and hasattr(data, "edge_features"):
+                model_args["edge_features"] = data.edge_features
+            latent_space = model(**model_args)
             train_space.append(latent_space)
             train_labels.append(data.y)
         for data in tqdm(test_loader, desc="Converting test graph data"):
-            if "edge_features" in sig.parameters and hasattr(data, "edge_features"):  # for edge features
-                latent_space = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices)
-            else:
-                latent_space = model(data.edge_index, data.node_features, data.batch_indices)
+            model_args = {
+                "edge_index": data.edge_index,
+                "x": data.node_features,
+                "batch_indices": data.batch_indices,
+            }
+            if uses_edge_features and hasattr(data, "edge_features"):
+                model_args["edge_features"] = data.edge_features
+            latent_space = model(**model_args)
             test_space.append(latent_space)
             test_labels.append(data.y)
 
@@ -105,16 +136,20 @@ class Base(mlx.nn.Module):
 
         # evaluate
         model.eval()
-        sig = inspect.signature(model.__call__)
+        uses_edge_features = model._has_param("edge_features")
         for data in tqdm(data_loader, desc="Converting graph data"):
-            if "edge_features" in sig.parameters and hasattr(data, "edge_features"):  # for edge features
-                latent_space = model(data.edge_index, data.node_features, data.edge_features, data.batch_indices)
-            else:
-                latent_space = model(data.edge_index, data.node_features, data.batch_indices)
+            model_args = {
+                "edge_index": data.edge_index,
+                "x": data.node_features,
+                "batch_indices": data.batch_indices,
+            }
+            if uses_edge_features and hasattr(data, "edge_features"):
+                model_args["edge_features"] = data.edge_features
+            latent_space = model(**model_args)
             space.append(latent_space)
 
         # combine mlx arrays and convert to numpy
-        latent_space = mx.concat(space, axis=0)
+        latent_space = mx.concatenate(space, axis=0)
         latent_space = np.array(latent_space)
         return latent_space
 
@@ -131,8 +166,7 @@ class Base(mlx.nn.Module):
         }
 
         # determine if model accepts additional edge_features
-        sig = inspect.signature(model.__call__)
-        if "edge_features" in sig.parameters:
+        if model._has_param("edge_features"):
             model_args["edge_features"] = graph.edge_features
 
         # forward pass
@@ -166,7 +200,6 @@ class GCN(Base):
             Set pooling method.
         """
 
-        global graph_hidden_dim
         super().__init__()
         self.act = act
         self.pooling = pooling
@@ -186,7 +219,9 @@ class GCN(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
 
     def __call__(self, edge_index, x, batch_indices):
         # graph layers
@@ -225,7 +260,6 @@ class GINE(Base):
             Set pooling method.
         """
 
-        global reduced_graph_dim
         super().__init__()
         self.act = act
         self.pooling = pooling
@@ -256,7 +290,9 @@ class GINE(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
 
     def __call__(self, edge_index, x, edge_features, batch_indices, add_feats=None):
         # graph layers
@@ -297,7 +333,6 @@ class GSAGE(Base):
         :param pooling: str
             Set the pooling method.
         """
-        global graph_hidden_dim
         super().__init__()
         self.act = act
         self.pooling = pooling
@@ -318,7 +353,9 @@ class GSAGE(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
 
     def __call__(self, edge_index, x, batch_indices, add_feats=None):
         # graph layers
@@ -361,7 +398,6 @@ class GAT(Base):
         :param pooling: str
             Set pooling method.
         """
-        global reduced_graph_dim, out_dim
         super().__init__()
         self.act = act
         self.pooling = pooling
@@ -385,6 +421,8 @@ class GAT(Base):
             # normalize nodes
             self.normalization.append(mlx.nn.BatchNorm(out_channels))
             in_channels = out_channels  # reset in_channels for next layer
+
+        self.out_dim = in_channels
 
     def __call__(self, edge_index, x, edge_features=None, batch_indices=None, add_feats=None):
         # graph layers

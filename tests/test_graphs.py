@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 from rdkit import Chem
@@ -139,3 +140,45 @@ def test_mol_to_graph_label_types_and_add_feats(bace_df):
     data_extra = mol_to_graph(smi, label=1, add_feats=extra, add_smi=True)
     assert data_extra.add_feats.shape == (1, 3)
     assert isinstance(data_extra.smi, str) and len(data_extra.smi) > 0
+    assert not hasattr(data_extra, "y_mask")
+
+
+def test_mol_to_graph_multitarget_nan_mask_and_batching(bace_df):
+    from mminer_graphs.model import MolToGraph
+
+    # Mix of list (with None/NaN), numpy array, pandas Series, and torch Tensor
+    smis = bace_df["smiles"].iloc[:4].tolist()
+    targets = [
+        [1, np.nan, 45.2],
+        np.array([0.0, 2.5, np.nan], dtype=np.float64),
+        pd.Series([1, 3.1, 60.0]),
+        torch.tensor([float("nan"), 1.8, 52.0]),
+    ]
+    # Also test None inside Python list
+    g_none = MolToGraph(smis[0], label=[1, None, 45.2], graph_type="AtomGraph").graph_data
+    assert g_none.y.shape == (1, 3) and g_none.y.dtype == torch.float32
+    assert g_none.y_mask.shape == (1, 3) and g_none.y_mask.dtype == torch.bool
+    assert not torch.isnan(g_none.y).any()
+    assert g_none.y_mask.tolist() == [[True, False, True]]
+    assert g_none.y[0, 1].item() == 0.0
+
+    graphs = [MolToGraph(s, label=t, graph_type="AtomGraph").graph_data for s, t in zip(smis, targets)]
+    batch = next(iter(DataLoader(graphs, batch_size=4, shuffle=False)))
+    assert batch.y.shape == (4, 3) and batch.y.dtype == torch.float32
+    assert batch.y_mask.shape == (4, 3) and batch.y_mask.dtype == torch.bool
+    assert not torch.isnan(batch.y).any()
+    assert batch.y_mask.tolist() == [
+        [True, False, True],
+        [True, True, False],
+        [True, True, True],
+        [False, True, True],
+    ]
+    assert np.isclose(batch.y[2, 1].item(), 3.1, atol=1e-5)
+
+    # Validation guards for bad multi-target inputs
+    with pytest.raises(ValueError, match="empty"):
+        mol_to_graph(smis[0], label=[])
+    with pytest.raises(ValueError, match="1D"):
+        mol_to_graph(smis[0], label=np.ones((2, 2)))
+    with pytest.raises(TypeError):
+        mol_to_graph(smis[0], label=["bad", 1.0])

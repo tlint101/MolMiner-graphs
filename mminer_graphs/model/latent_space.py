@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.nn import GCNConv, GINConv, GINEConv, SAGEConv, GATConv, global_mean_pool, global_max_pool, global_add_pool
 from torch_geometric.loader import DataLoader
 from mminer_graphs.model.model_utils import seed_worker, make_generator, get_device, F_ACT
 from tqdm import tqdm
@@ -99,6 +99,16 @@ class Base(nn.Module):
         latent_space = torch.cat(space, dim=0).cpu().numpy()
         return latent_space
 
+    def reset_params(self):
+        """
+        Reset all learnable parameters and BatchNorm statistics across the encoder.
+        """
+        for module in self.modules():
+            if module is self:
+                continue
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
+
 
 # Graph Convolutional Neural Network
 class GCN(Base):
@@ -143,7 +153,9 @@ class GCN(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -151,6 +163,75 @@ class GCN(Base):
         # graph layers
         act_fn = F_ACT[self.act]
         for i, (conv, norm) in enumerate(zip(self.gcn_conv, self.normalization)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = act_fn(x)
+            x = F.dropout(x, p=self.graph_dropout, training=self.training)
+
+        # readout layer
+        x = _global_pooling(x, batch, pool_type=self.pooling)
+
+        return x
+
+
+class GIN(Base):
+    def __init__(self, node_dim: int = 142, hidden_dim: int = 64, graph_layers: int = 2,
+                 reduce_graph: bool = False, graph_dropout: float = 0.0, act: str = "relu", pooling: str = "add"):
+        """
+        Generate latent graph space vectors from Graph Isomorphism Network convolution layers (without edge features).
+        The default model will generate two graph layers.
+        :param node_dim: int
+            Length of node feature vector.
+        :param hidden_dim: int
+            Set the dimensions of the hidden layers in the graph network.
+        :param graph_layers: int
+            Number of graph layers.
+        :param reduce_graph: bool
+            Determine if the hidden_dim in the graph layer should be reduced by 2 for each subsequent layer.
+        :param graph_dropout: float
+            Set the graph dropout during activation.
+        :param act: str
+            Set the non-linear activation function. Default to "relu".
+        :param pooling: str
+            Set pooling method.
+        """
+
+        super().__init__()
+        self.act = act
+        self.pooling = pooling
+        self.graph_dropout = graph_dropout
+
+        # set graph layers
+        self.gin_conv = nn.ModuleList()
+        self.normalization = nn.ModuleList()
+
+        graph_hidden_dim = hidden_dim
+        for x in range(graph_layers):
+            in_dim = node_dim if x == 0 else graph_hidden_dim
+            nnet = nn.Sequential(
+                nn.Linear(in_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU()
+            )
+
+            self.gin_conv.append(GINConv(nn=nnet))
+            self.normalization.append(nn.BatchNorm1d(hidden_dim))
+
+            # update dimensions for next layer
+            graph_hidden_dim = hidden_dim
+            if reduce_graph:
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
+
+    def forward(self, data):
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+
+        # graph layers
+        act_fn = F_ACT[self.act]
+        for i, (conv, norm) in enumerate(zip(self.gin_conv, self.normalization)):
             x = conv(x, edge_index)
             x = norm(x)
             x = act_fn(x)
@@ -214,7 +295,9 @@ class GINE(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
+
+        self.out_dim = graph_hidden_dim
 
     def forward(self, data):
         x, edge_index, edge_attr, batch = data.x, data.edge_index, data.edge_attr, data.batch
@@ -277,6 +360,8 @@ class GSAGE(Base):
             # normalize nodes
             self.normalization.append(nn.BatchNorm1d(graph_hidden_dim))
             in_channels = graph_hidden_dim  # reset in_channels for next layer
+
+        self.out_dim = in_channels
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch
@@ -351,6 +436,8 @@ class GAT(Base):
             # normalize nodes
             self.normalization.append(nn.BatchNorm1d(out_channels))
             in_channels = out_channels  # reset in_channels for next layer
+
+        self.out_dim = in_channels
 
     def forward(self, data):
         x, edge_index, batch = data.x, data.edge_index, data.batch

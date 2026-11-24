@@ -99,25 +99,26 @@ def set_seed(seed=42):
 
 
 class MolToGraph:
-    def __init__(self, smi: str, label: Optional[Union[int, float]] = None, graph_type: str = "AtomGraph",
-                 add_smi: bool = False, add_feats: Optional[Union[np.array, list]] = None,
-                 with_atom_index: bool = False):
+    def __init__(self, smi: str, label: Optional[Union[int, float, list, tuple, np.ndarray]] = None,
+                 graph_type: str = "AtomGraph", add_smi: bool = False,
+                 add_feats: Optional[Union[np.ndarray, list]] = None, with_atom_index: bool = False):
         """
         Generate molecular graphs for use in the graph neural networks. The script pulls information from the .graph
         module with additional params to include information on tensors where needed.
         :param smi: str
             Molecular smiles string for conversion into molecular graph.
-        :param label: Union[int,float]
-            Label for molecule.
+        :param label: Optional[Union[int, float, list, tuple, np.ndarray]]
+            Label for molecule. Pass a scalar for single-task models, or a 1D sequence/array of length T (allowing
+            np.nan or None for missing assays) for multi-task models.
         :param graph_type: str
             The molecular graph type to generate from smiles string. Can be 'AtomGraph', 'PharmacophoreGraph'
             'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.
         :param add_smi: bool
             Whether to store the standardized SMILES string on `self.smi` (kept off `GraphData` because
             `mlx_graphs` batching requires all `GraphData` attributes to be `mx.array`).
-        :param add_feats: Optional[Union[np.array, list]]
-            Include additional information to include with the molecular graph tensor. Must be given as a np.array or a
-            list.
+        :param add_feats: Optional[Union[np.ndarray, list]]
+            Include additional information to include with the molecular graph tensor. Must be given as a np.ndarray or
+            a list.
         :param with_atom_index: bool
             To include the smi string with atom index. Defaults to False.
         """
@@ -2135,17 +2136,17 @@ def _torch_to_mlx(graph):
             # Skip non-array metadata (e.g. SMILES string); mlx_graphs collate requires mx.array attributes
             if attr == 'smi' or isinstance(attr_value, str):
                 continue
-            # Convert to float32 by default, except edge_index
+            # Convert to float32 by default, except edge_index and y_mask
             if attr == 'edge_index':
                 mlx_dict[attr] = mx.array(attr_value, dtype=mx.int32)
-            else:
-                mlx_dict[attr] = mx.array(attr_value, dtype=mx.float32)
-            # flatten [1, features] tensor from mol_to_graph to keep mlx graphs unchanged
-            if attr == 'add_feats':
+            elif attr == 'y_mask':
+                mlx_dict[attr] = mx.array(attr_value.detach().cpu().numpy(), dtype=mx.bool_)
+            elif attr == 'add_feats':
+                # flatten [1, features] tensor from mol_to_graph to keep mlx graphs unchanged
                 mlx_dict[attr] = mx.array(attr_value.reshape(-1), dtype=mx.float32)
                 add_feats = 1
             else:
-                pass
+                mlx_dict[attr] = mx.array(attr_value, dtype=mx.float32)
 
     graph_args = {
         "edge_index": mlx_dict["edge_index"],
@@ -2155,6 +2156,9 @@ def _torch_to_mlx(graph):
 
     if "y" in mlx_dict:
         graph_args["y"] = mlx_dict["y"]
+
+    if "y_mask" in mlx_dict:
+        graph_args["y_mask"] = mlx_dict["y_mask"]
 
     if add_feats == 1 and "add_feats" in mlx_dict:
         graph_args["add_feats"] = mlx_dict["add_feats"]

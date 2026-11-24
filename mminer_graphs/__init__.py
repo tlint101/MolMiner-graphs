@@ -6,8 +6,9 @@ from .graph.graph_structure import PharmacophoreGraph, FunctionalGraph
 from .graph.graph_cluster import JunctionTreeGraph, ClusterGraph
 from .visualizer.graph_visualizer import Graph
 from .model.graph_modeling import MolToGraph, Base, GCNNet, GINNet, GINENet, GSAGENet, GATNet, EarlyStopping
+from .model.multitask import MultiTaskGNN
 from .model.crossval import CrossVal
 from .plot import Plots
 
 __all__ = ["AtomGraph", "GLOBAL_VALUES", "PharmacophoreGraph", "FunctionalGraph", "JunctionTreeGraph", "ClusterGraph",
-           "Graph", "MolToGraph", "Plots"]
+           "Graph", "MolToGraph", "MultiTaskGNN", "Plots"]

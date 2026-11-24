@@ -66,15 +66,17 @@ def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, x:
 
 
 class MolToGraph:
-    def __init__(self, smi: str, label: Optional[Union[int, float]] = None, graph_type: str = "AtomGraph",
-                 add_smi: bool = False, add_feats=None, with_atom_index: bool = False):
+    def __init__(self, smi: str, label: Optional[Union[int, float, list, tuple, np.ndarray]] = None,
+                 graph_type: str = "AtomGraph", add_smi: bool = False, add_feats=None,
+                 with_atom_index: bool = False):
         """
         Generate molecular graphs for use in the graph neural networks. The script pulls information from the .graph
         module with additional params to include information on tensors where needed.
         :param smi: str
             Molecular smiles string for conversion into molecular graph.
-        :param label: Union[int,float]
-            Label for molecule.
+        :param label: Optional[Union[int, float, list, tuple, np.ndarray]]
+            Label for molecule. Pass a scalar for single-task models, or a 1D sequence/array of length T (allowing
+            np.nan or None for missing assays) for multi-task models.
         :param graph_type: str
             The molecular graph type to generate from smiles string. Can be 'AtomGraph', 'PharmacophoreGraph'
             'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.

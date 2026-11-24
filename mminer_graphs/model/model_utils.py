@@ -2,6 +2,7 @@ import random
 import torch
 import subprocess
 import numpy as np
+import pandas as pd
 from typing import Optional, Union
 import torch.nn.functional as F
 from torch_geometric.data import Data
@@ -74,19 +75,21 @@ F_ACT = {
 }
 
 
-def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "AtomGraph", add_smi: bool = False,
-                 add_feats: Optional[Union[np.array, list]] = None, with_atom_index: bool = False):
+def mol_to_graph(smi: str, label: Optional[Union[int, float, list, tuple, np.ndarray, pd.Series, torch.Tensor]] = None,
+                 graph_type: str = "AtomGraph", add_smi: bool = False,
+                 add_feats: Optional[Union[np.ndarray, list]] = None, with_atom_index: bool = False):
     """
     Support function to convert molecules into graph for torch, used inside class MolToGraph.
     :param smi: str
         Molecule as a smiles string.
-    :param label: pd.series
-        Associated label for each molecule.
+    :param label: Optional[Union[int, float, list, tuple, np.ndarray, pd.Series, torch.Tensor]]
+        Associated label for the molecule. Pass a scalar int/float for single-task models, or a 1D sequence/array of
+        length T (allowing np.nan or None for missing/untested assays) for multi-task models.
     :param graph_type: str
         The molecular graph type to generate from smiles string. Can be 'AtomGraph', 'PharmacophoreGraph'
         'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.
-    :param add_feats: Optional[Union[np.array, list]]
-        Include additional information to include with the molecular graph tensor. Must be given as a np.array or a
+    :param add_feats: Optional[Union[np.ndarray, list]]
+        Include additional information to include with the molecular graph tensor. Must be given as a np.ndarray or a
         list.
     :param with_atom_index: bool
         To include the smi string with atom index. Defaults to False.
@@ -129,6 +132,7 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
     # append smi string
     smiles = graph.smi
 
+    y_mask = None
     if label is not None:
         if isinstance(label, (bool, np.bool_)):
             y = torch.tensor([int(label)], dtype=torch.long)
@@ -136,9 +140,43 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
             y = torch.tensor([int(label)], dtype=torch.long)
         elif isinstance(label, (float, np.floating)):
             y = torch.tensor([float(label)], dtype=torch.float32)
+        elif isinstance(label, (list, tuple, np.ndarray, pd.Series, torch.Tensor)):
+            arr = label.detach().cpu().numpy() if isinstance(label, torch.Tensor) else np.asarray(label)
+            if arr.ndim == 0:
+                scalar = arr.item()
+                if isinstance(scalar, (bool, np.bool_, int, np.integer)):
+                    y = torch.tensor([int(scalar)], dtype=torch.long)
+                elif isinstance(scalar, (float, np.floating)):
+                    y = torch.tensor([float(scalar)], dtype=torch.float32)
+                else:
+                    raise TypeError(
+                        f"Unsupported label type {type(scalar).__name__}; expected numeric scalar or 1D sequence."
+                    )
+            elif arr.ndim == 1:
+                if arr.size == 0:
+                    raise ValueError("Multi-target label cannot be empty.")
+                if np.issubdtype(arr.dtype, np.number) or arr.dtype == np.bool_:
+                    arr_float = arr.astype(np.float32)
+                else:
+                    try:
+                        arr_float = np.array(
+                            [np.nan if v is None else float(v) for v in arr],
+                            dtype=np.float32,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        raise TypeError(
+                            f"Multi-target label elements must be numeric, None, or NaN (got {label!r})."
+                        ) from exc
+                mask = ~np.isnan(arr_float)
+                clean = np.where(mask, arr_float, 0.0).astype(np.float32)
+                # Store as [1, T] so DataLoader stacks batches cleanly to [batch_size, T]
+                y = torch.tensor(clean, dtype=torch.float32).reshape(1, -1)
+                y_mask = torch.tensor(mask, dtype=torch.bool).reshape(1, -1)
+            else:
+                raise ValueError(f"Multi-target label must be 1D (got shape {arr.shape}).")
         else:
             raise TypeError(
-                f"Unsupported label type {type(label).__name__}; expected int, float, numpy scalar, or None."
+                f"Unsupported label type {type(label).__name__}; expected int, float, numpy scalar, 1D sequence/array, or None."
             )
     else:
         y = None
@@ -147,14 +185,14 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
     if add_feats is not None:
         add_feats = torch.tensor(np.asarray(add_feats), dtype=torch.float32).reshape(1, -1)
 
-    if add_smi and add_feats is not None:
-        return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles, add_feats=add_feats)
-    elif add_smi:
-        return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, smi=smiles)
-    elif add_feats is not None:
-        return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y, add_feats=add_feats)
-    else:
-        return Data(x=node, edge_index=edge_index, edge_attr=bond, y=y)
+    data_kwargs = dict(x=node, edge_index=edge_index, edge_attr=bond, y=y)
+    if y_mask is not None:
+        data_kwargs["y_mask"] = y_mask
+    if add_smi:
+        data_kwargs["smi"] = smiles
+    if add_feats is not None:
+        data_kwargs["add_feats"] = add_feats
+    return Data(**data_kwargs)
 
 
 # support function to determine if gpu, mps, or cpu will be used for torch models
