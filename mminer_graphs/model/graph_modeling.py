@@ -15,7 +15,7 @@ from mminer_graphs.model.model_utils import set_seed, mol_to_graph, get_device, 
 from tqdm import tqdm
 from typing import Optional, Union
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score, mean_absolute_error, r2_score, \
-    mean_squared_error
+    root_mean_squared_error
 
 
 def summary(model: nn.Module, data: Optional[Union[DataLoader, list]] = None, x: Optional[Union[list, int]] = None,
@@ -1913,7 +1913,7 @@ def train_mlp_r(model, train_loader, optimizer, criterion, device, y_mean, y_std
     train_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    train_rmse = mean_squared_error(all_labels, all_preds)
+    train_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     train_r2 = r2_score(all_labels, all_preds)
@@ -1961,7 +1961,7 @@ def test_mlp_r(model, test_loader, criterion, device, y_mean, y_std):
     test_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    test_rmse = mean_squared_error(all_labels, all_preds)
+    test_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     test_r2 = r2_score(all_labels, all_preds)
@@ -2106,7 +2106,7 @@ def train_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
     train_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    train_rmse = mean_squared_error(all_labels, all_preds)
+    train_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     train_r2 = r2_score(all_labels, all_preds)
@@ -2152,7 +2152,7 @@ def test_r(model, test_loader, criterion, device, y_mean, y_std):
     test_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    test_rmse = mean_squared_error(all_labels, all_preds)
+    test_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     test_r2 = r2_score(all_labels, all_preds)

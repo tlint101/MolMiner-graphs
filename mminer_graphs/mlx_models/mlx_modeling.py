@@ -17,7 +17,7 @@ from mminer_graphs.mlx_models.mlx_summary import MLXModelStatistics
 from mminer_graphs.mlx_models.mlx_utils import get_device, state_apple_silicon_device, MLX_OPTI, MLX_ACT, \
     MLX_CRITERIONS, MLX_CLASSIFICATION, MLX_REGRESSION, NO_WT_DECAY
 from sklearn.metrics import matthews_corrcoef, recall_score, f1_score, roc_auc_score, mean_absolute_error, r2_score, \
-    mean_squared_error, accuracy_score, precision_score
+    root_mean_squared_error, accuracy_score, precision_score
 
 
 def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int = None,
@@ -70,9 +70,9 @@ def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int =
                         'ROC_AUC': [roc_auc]}
     elif model.task == "Regression":
         mae = mean_absolute_error(true_y, y_pred)
-        mse = mean_squared_error(true_y, y_pred)
+        rmse = root_mean_squared_error(true_y, y_pred)
         r2 = r2_score(true_y, y_pred)
-        metrics_dict = {'MAE': [mae], 'MSE': [mse], "R2": [r2]}
+        metrics_dict = {'MAE': [mae], 'RMSE': [rmse], "R2": [r2]}
     else:
         raise ValueError("Cannot find model type! Is it fitted?")
 
@@ -1884,7 +1884,7 @@ def train_mlp_r(model, x_train, y_train, loss_and_grad_fn, optimizer, batch_size
     train_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    train_rmse = mean_squared_error(all_labels, all_preds)
+    train_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     train_r2 = r2_score(all_labels, all_preds)
@@ -1932,7 +1932,7 @@ def test_mlp_r(model, x_test, y_test, criterion, batch_size, y_mean, y_std):
     test_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    test_rmse = mean_squared_error(all_labels, all_preds)
+    test_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     test_r2 = r2_score(all_labels, all_preds)
@@ -2099,7 +2099,7 @@ def train_r(model, train_loader, loss_and_grad_fn, optimizer, y_mean, y_std):
     train_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    train_rmse = mean_squared_error(all_labels, all_preds)
+    train_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     train_r2 = r2_score(all_labels, all_preds)
@@ -2156,7 +2156,7 @@ def test_r(model, test_loader, criterion, y_mean, y_std):
     test_mae = mean_absolute_error(all_labels, all_preds)
 
     # root mean squared error
-    test_rmse = mean_squared_error(all_labels, all_preds)
+    test_rmse = root_mean_squared_error(all_labels, all_preds)
 
     # r-squared
     test_r2 = r2_score(all_labels, all_preds)
