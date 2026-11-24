@@ -485,22 +485,17 @@ class Plots:
         try:
             for datapoint in data:
                 labels = datapoint.y
-                all_labels.extend(labels.to('cpu'))  # move tensors to cpu
+                all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
         except AttributeError:
             # for MLP tabular data
+            x_batches = []
             for x_batch, y_batch in data:
-                labels = y_batch
-                data = x_batch
-                all_labels.extend(labels.to('cpu'))
-
-        # output format
-        if self.device == "cuda" or self.device == "gpu":
-            return_type = "tensor"
-        else:
-            return_type = "list"
+                x_batches.append(x_batch)
+                all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
+            data = torch.cat(x_batches, dim=0)
 
         # get prediction labels
-        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type)
+        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
 
         # calculate matrix
         cm_matrix = confusion_matrix(y_true, y_pred)
@@ -579,22 +574,17 @@ class Plots:
         try:
             for datapoint in data:
                 labels = datapoint.y
-                all_labels.extend(labels.to('cpu'))  # move tensors to cpu
+                all_labels.extend(labels.detach().cpu().numpy().flatten().tolist())
         except AttributeError:
             # for MLP tabular data
+            x_batches = []
             for x_batch, y_batch in data:
-                labels = y_batch
-                data = x_batch
-                all_labels.extend(labels.to('cpu'))
-
-        # output format
-        if self.device == "cuda" or self.device == "gpu":
-            return_type = "tensor"
-        else:
-            return_type = "list"
+                x_batches.append(x_batch)
+                all_labels.extend(y_batch.detach().cpu().numpy().flatten().tolist())
+            data = torch.cat(x_batches, dim=0)
 
         # get prediction labels
-        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type)
+        y_true, y_pred = self._get_prediction_labels(add_feats, all_labels, cutoff, data, model, return_type="array")
 
         # calculate classification report
         report_dict = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
@@ -623,38 +613,26 @@ class Plots:
 
     def _get_prediction_labels(self, add_feats: list | int | None | Any, all_labels: list[Any], cutoff: float,
                                data: Optional[Union[DataLoader, Any]], model: Any | None,
-                               return_type: str) -> tuple[ndarray[Any, dtype[Any]], Any]:
+                               return_type: str = "array") -> tuple[ndarray[Any, dtype[Any]], Any]:
         """
         Support function for confusion matrix and classification report.
         """
         if data is not None:
-            try:  # todo check if there is a more elegant way to do this
-                if isinstance(cutoff, float):
-                    predictions = model.predict(data=data, device=self.device, binary=False, add_feats=add_feats,
-                                                cutoff=cutoff, return_type=return_type)
-                    # apply cutoff
-                    predictions = [1 if p >= cutoff else 0 for p in predictions]
+            try:
+                probs = model.predict(data=data, device=self.device, binary=False, add_feats=add_feats,
+                                      cutoff=cutoff, return_type="array")
+            except TypeError as e:
+                if "add_feats" in str(e):
+                    probs = model.predict(data=data, device=self.device, binary=False, cutoff=cutoff,
+                                          return_type="array")
                 else:
-                    predictions = model.predict(data=data, device=self.device, binary=False, add_feats=add_feats,
-                                                cutoff=cutoff, return_type=return_type)
-            except:
-                if isinstance(cutoff, float):
-                    predictions = model.predict(data=data, device=self.device, binary=False, cutoff=cutoff,
-                                                return_type=return_type)
-                    # apply cutoff
-                    predictions = [1 if p >= cutoff else 0 for p in predictions]
-                else:
-                    predictions = model.predict(data=data, device=self.device, binary=False, cutoff=cutoff,
-                                                return_type=return_type)
+                    raise
 
-            if self.device == "cuda" or self.device == "gpu":
-                # move tensors to cpu
-                y_true = np.array(all_labels)
-                y_pred = predictions.detach().cpu().numpy()
+            y_true = np.asarray(all_labels).squeeze()
+            if isinstance(cutoff, (float, int, np.floating, np.integer)):
+                y_pred = (np.asarray(probs) >= cutoff).astype(int)
             else:
-                # convert to np.array
-                y_true = np.array(all_labels)
-                y_pred = np.array(predictions)
+                y_pred = np.asarray(probs)
         else:
             raise ValueError("No data provided???")
         return y_true, y_pred
@@ -730,8 +708,14 @@ class Plots:
 
         if isinstance(model, list):
             for x, name, c in zip(model, model_names, color):
-                predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                        return_type="list")
+                try:
+                    predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                            return_type="list")
+                except TypeError as e:
+                    if "add_feats" in str(e):
+                        predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                    else:
+                        raise
                 # get false/true positive rate and thresholds
                 fpr, tpr, thresholds = roc_curve(all_labels, predictions)
                 roc_auc = roc_auc_score(all_labels, predictions)
@@ -850,12 +834,18 @@ class Plots:
 
         if isinstance(model, list):
             for x, name, c in zip(model, model_names, color):
-                predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
-                                        return_type="list")
-                # get false/true positive rate and thresholds
-                fpr, tpr, thresholds = roc_curve(all_labels, predictions)
-                roc_auc = roc_auc_score(all_labels, predictions)
-                plt.plot(fpr, tpr, color=c, lw=2, label=f"{name} {roc_auc:.3f}")
+                try:
+                    predictions = x.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,
+                                            return_type="list")
+                except TypeError as e:
+                    if "add_feats" in str(e):
+                        predictions = x.predict(data=data, binary=binary, device=self.device, return_type="list")
+                    else:
+                        raise
+                # get prec/recall/pr_threshold
+                prec, recall, pr_threshold = precision_recall_curve(all_labels, predictions)
+                avg_prec = average_precision_score(all_labels, predictions)
+                plt.plot(recall, prec, color=c, lw=2, label=f"{name} {avg_prec:.3f}")
         else:
             try:
                 predictions = model.predict(data=data, binary=binary, device=self.device, add_feats=add_feats,

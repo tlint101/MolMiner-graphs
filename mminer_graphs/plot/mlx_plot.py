@@ -453,7 +453,6 @@ class PlotsMLX:
         :return:
         """
 
-        global predictions
         if model is None:
             model = self.model
         if not model.is_fitted:
@@ -568,9 +567,10 @@ class PlotsMLX:
         """
         Support function for confusion matrix and classification report.
         """
-        # get labels from test_loader
-        global predictions
         all_labels = []
+        if isinstance(data, list):
+            data = Dataloader(data, batch_size=batch_size if batch_size is not None else 1024, shuffle=False)
+
         # get labels
         if isinstance(data, Dataloader):
             for datapoint in data:
@@ -585,32 +585,23 @@ class PlotsMLX:
             # combine mx.array into single array
             all_labels = mx.concatenate(all_labels, axis=0)
 
-        # get prediction labels
+        # get prediction probabilities once and apply cutoff once
         if data is not None:
-            if isinstance(cutoff, float):
-                predictions = model.predict(data=data, batch_size=batch_size, add_feats=add_feats, binary=True,
-                                            cutoff=cutoff, return_type="list")
-                # apply cutoff
-                predictions = [1 if p >= cutoff else 0 for p in predictions]
-            else:
-                predictions = model.predict(data=data, batch_size=batch_size, add_feats=add_feats, binary=True,
-                                            cutoff=cutoff, return_type="list")
+            probs = model.predict(data=data, batch_size=batch_size, add_feats=add_feats, binary=False,
+                                  cutoff=cutoff, return_type="list")
         elif self.x_data is not None and self.y_data is not None:
-            # add y labels
-            all_labels.append(self.y_data)
-            # get predictions from x_data
-            if isinstance(cutoff, float):
-                predictions = model.predict(data=self.x_data, batch_size=batch_size, binary=True, cutoff=cutoff,
-                                            return_type="list")
-                # apply cutoff
-                predictions = [1 if p >= cutoff else 0 for p in predictions]
-            else:
-                predictions = model.predict(data=self.x_data, batch_size=batch_size, binary=True, cutoff=cutoff,
-                                            return_type="list")
+            all_labels = self.y_data
+            probs = model.predict(data=self.x_data, batch_size=batch_size, binary=False, cutoff=cutoff,
+                                  return_type="list")
+        else:
+            raise ValueError("No data provided???")
 
-        # convert to np.array
-        y_true = np.array(all_labels).squeeze()  # convert 2D array to 1D
-        y_pred = np.array(predictions)
+        # convert to np.array and threshold once
+        y_true = np.asarray(all_labels).squeeze()
+        if isinstance(cutoff, (float, int, np.floating, np.integer)):
+            y_pred = (np.asarray(probs) >= cutoff).astype(int)
+        else:
+            y_pred = np.asarray(probs)
 
         return y_true, y_pred
 
