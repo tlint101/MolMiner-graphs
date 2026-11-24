@@ -76,6 +76,10 @@ class JunctionTreeGraph(MolGraph):
                         cliques[j] = []
 
         cliques = [c for c in cliques if len(c) > 0]
+        atom_clique_neighbors = [[] for _ in range(n_atoms)]
+        for x in range(len(cliques)):
+            for atom in cliques[x]:
+                atom_clique_neighbors[atom].append(x)
 
         # build edges and add singleton cliques
         edges = defaultdict(int)
@@ -159,8 +163,6 @@ class JunctionTreeGraph(MolGraph):
                 sb = atom.GetSymbol()
                 if sb in NUM_ATOM_DICT:
                     NUM_ATOM_DICT[sb] += 1
-                else:
-                    NUM_ATOM_DICT['Unknown'] += 1
         # is ring
         is_ring = 0
         if len(clique) > 2:
@@ -173,7 +175,8 @@ class JunctionTreeGraph(MolGraph):
         for bond in mol.GetBonds():
             if bond.GetBeginAtomIdx() in clique and bond.GetEndAtomIdx() in clique:
                 bt = bond.GetBondType()
-                NUM_BOND_DICT[bt] += 1
+                if bt in NUM_BOND_DICT:
+                    NUM_BOND_DICT[bt] += 1
 
                 # convert number of each atom
         if sum(list(NUM_ATOM_DICT.values())) != 0 and self.normalize:
@@ -329,8 +332,9 @@ class ClusterGraph(MolGraph):
 
     # todo add MolWt, TPSA, mass, and aromaticity
     def get_cluster_clique_features(self, clique, edges, clique_idx, mol):
-        # number of node (atom) features (44 total)
+        # number of node (atom) features (139 total)
         NUM_ATOM_DICT = {x: 0 for x in ATOMS}
+        NUM_BOND_DICT = {b: 0 for b in BONDS}
 
         # number of atoms
         num_atoms = len(clique)
@@ -348,8 +352,6 @@ class ClusterGraph(MolGraph):
                 sb = atom.GetSymbol()
                 if sb in NUM_ATOM_DICT:
                     NUM_ATOM_DICT[sb] += 1
-                else:
-                    NUM_ATOM_DICT['Unknown'] += 1
         # is ring
         is_ring = 0
         if len(clique) > 2:
@@ -359,24 +361,23 @@ class ClusterGraph(MolGraph):
         if len(clique) == 2:
             is_bond = 1
 
-        num_each_bond_dict = defaultdict(int)
         # number of each bond
         for bond in mol.GetBonds():
             if bond.GetBeginAtomIdx() in clique and bond.GetEndAtomIdx() in clique:
                 bond_type = bond.GetBondType()
-                num_each_bond_dict[bond_type] += 1
+                if bond_type in NUM_BOND_DICT:
+                    NUM_BOND_DICT[bond_type] += 1
 
-                # convert number of each atom
+        # convert number of each atom
         if sum(list(NUM_ATOM_DICT.values())) != 0 and self.normalize:
             num_each_atom = [float(x) / sum(list(NUM_ATOM_DICT.values())) for x in list(NUM_ATOM_DICT.values())]
         else:
-            # convert number of each bond
             num_each_atom = [int(x) for x in list(NUM_ATOM_DICT.values())]
-        if sum(list(num_each_bond_dict.values())) != 0 and self.normalize:
-            num_each_bond = [float(x) / sum(list(num_each_bond_dict.values())) for x in
-                             list(num_each_bond_dict.values())]
+        # convert number of each bond
+        if sum(list(NUM_BOND_DICT.values())) != 0 and self.normalize:
+            num_each_bond = [float(x) / sum(list(NUM_BOND_DICT.values())) for x in list(NUM_BOND_DICT.values())]
         else:
-            num_each_bond = [int(x) for x in list(num_each_bond_dict.values())]
+            num_each_bond = [int(x) for x in list(NUM_BOND_DICT.values())]
 
         return np.array(
             one_of_k_encoding_unk(num_atoms, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) +
