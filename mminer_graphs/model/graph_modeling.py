@@ -456,30 +456,18 @@ class Base(nn.Module):
 
     def reset_params(self):
         """
-        reset the layers in GCNConvNet
-        :return:
+        Reset all learnable parameters and BatchNorm across the model (graph convolution layers, normalization layers,
+        and MLP layers).
         """
+        for module in self.modules():
+            if module is self:
+                continue
+            if hasattr(module, 'reset_parameters'):
+                module.reset_parameters()
 
-        # graph layers
-        conv_layer_names = ["gcn_conv", "gin_conv", "gine_conv", "sage_conv", "gat_conv"]
-        conv_layers = None
-        for name in conv_layer_names:
-            if hasattr(self, name):
-                conv_layers = getattr(self, name)
-                break
-
-        if conv_layers is None:
-            raise ValueError("No defined conv layers found!")
-
-        # mlp layers
-        for x in self.mlp:
-            for layer in x:
-                if hasattr(layer, 'reset_parameters'):
-                    layer.reset_parameters()
-
-        # final mlp layer
-        if hasattr(self.final_mlp, 'reset_parameters'):
-            self.final_mlp.reset_parameters()
+        self.is_fitted = False
+        self.y_mean = None
+        self.y_std = None
 
     def save(self, filepath: str):
         """
