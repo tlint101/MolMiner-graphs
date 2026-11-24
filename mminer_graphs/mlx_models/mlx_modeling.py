@@ -786,7 +786,7 @@ class GCNNet(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -797,7 +797,7 @@ class GCNNet(Base):
             add_feat = 0
 
         # get dimension of mlp layers
-        mlp_dim = hidden_dim + add_feat
+        mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
     def __call__(self, edge_index, x, batch_indices, add_feats=None):
@@ -1024,7 +1024,7 @@ class GSAGENet(Base):
             # update dimensions for next layer
             graph_hidden_dim = hidden_dim
             if reduce_graph:
-                hidden_dim = round(hidden_dim / 2)
+                hidden_dim = max(1, round(hidden_dim / 2))
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -1035,7 +1035,7 @@ class GSAGENet(Base):
             add_feat = 0
 
         # get dimension of mlp layers
-        mlp_dim = hidden_dim + add_feat
+        mlp_dim = graph_hidden_dim + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
     def __call__(self, edge_index, x, batch_indices, add_feats=None):
@@ -1133,21 +1133,15 @@ class GATNet(Base):
         graph_hidden_dim = hidden_dim
         in_channels = node_dim
         for x in range(graph_layers):
-            if x > 0:
-                graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+            if x > 0 and reduce_graph:
+                graph_hidden_dim = max(1, round(graph_hidden_dim / 2))
 
-            if x == 0:
-                self.gat_conv.append(GATConv(node_features_dim=in_channels, out_features_dim=graph_hidden_dim,
-                                             heads=heads, edge_features_dim=edge_feat_dim, dropout=graph_dropout))
-                # normalize nodes
-                self.normalization.append(mlx.nn.BatchNorm(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels
-            else:
-                self.gat_conv.append(GATConv(node_features_dim=in_channels, out_features_dim=graph_hidden_dim,
-                                             heads=heads, edge_features_dim=edge_feat_dim, dropout=graph_dropout))
-                # normalize nodes
-                self.normalization.append(mlx.nn.BatchNorm(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels for loop
+            out_channels = graph_hidden_dim * heads
+            self.gat_conv.append(GATConv(node_features_dim=in_channels, out_features_dim=graph_hidden_dim,
+                                         heads=heads, edge_features_dim=edge_feat_dim, dropout=graph_dropout))
+            # normalize nodes
+            self.normalization.append(mlx.nn.BatchNorm(out_channels))
+            in_channels = out_channels  # reset in_channels for next layer
 
         # if a list of additional features are given, will be added to the graph latent array
         if isinstance(add_feats, list) or isinstance(add_feats, np.ndarray):
@@ -1158,8 +1152,7 @@ class GATNet(Base):
             add_feat = 0
 
         # get dimension of mlp layers
-        mlp_dim = graph_hidden_dim
-        mlp_dim = mlp_dim + add_feat
+        mlp_dim = in_channels + add_feat
         self.mlp, self.final_mlp = self._build_mlp(mlp_dim, mlp_layers, num_classes, mlp_dropout)
 
     def __call__(self, edge_index, x, edge_features=None, batch_indices=None, add_feats=None):

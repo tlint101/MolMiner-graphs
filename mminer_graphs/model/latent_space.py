@@ -283,21 +283,14 @@ class GSAGE(Base):
         graph_hidden_dim = hidden_dim
         in_channels = node_dim
         for x in range(graph_layers):
-            if x > 0:
-                graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+            if x > 0 and reduce_graph:
+                graph_hidden_dim = max(1, round(graph_hidden_dim / 2))
 
-            if x == 0:
-                self.sage_conv.append(
-                    SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
-                # normalize nodes
-                self.normalization.append(nn.BatchNorm1d(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels
-            else:
-                self.sage_conv.append(
-                    SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
-                # normalize nodes
-                self.normalization.append(nn.BatchNorm1d(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels for loop
+            self.sage_conv.append(
+                SAGEConv(in_channels=in_channels, out_channels=graph_hidden_dim))
+            # normalize nodes
+            self.normalization.append(nn.BatchNorm1d(graph_hidden_dim))
+            in_channels = graph_hidden_dim  # reset in_channels for next layer
 
         # graph layer training info
         self.train_loss = []
@@ -371,21 +364,15 @@ class GAT(Base):
         graph_hidden_dim = hidden_dim
         in_channels = node_dim
         for x in range(graph_layers):
-            if x > 0:
-                graph_hidden_dim = round(graph_hidden_dim / 2) if reduce_graph is True else graph_hidden_dim
+            if x > 0 and reduce_graph:
+                graph_hidden_dim = max(1, round(graph_hidden_dim / 2))
 
-            if x == 0:
-                self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
-                                             edge_dim=edge_feat_dim, dropout=graph_dropout))
-                # normalize nodes
-                self.normalization.append(nn.BatchNorm1d(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels
-            else:
-                self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
-                                             edge_dim=edge_feat_dim, dropout=graph_dropout))
-                # normalize nodes
-                self.normalization.append(nn.BatchNorm1d(hidden_dim))
-                in_channels = graph_hidden_dim  # reset in_channels for loop
+            out_channels = graph_hidden_dim * heads
+            self.gat_conv.append(GATConv(in_channels=in_channels, out_channels=graph_hidden_dim, heads=heads,
+                                         edge_dim=edge_feat_dim, dropout=graph_dropout))
+            # normalize nodes
+            self.normalization.append(nn.BatchNorm1d(out_channels))
+            in_channels = out_channels  # reset in_channels for next layer
 
         # graph layer training info
         self.train_loss = []
