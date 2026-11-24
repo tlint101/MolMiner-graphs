@@ -756,6 +756,7 @@ class GCNNet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.mlp_dropout = mlp_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
         self.is_fitted = False
         if num_classes == 1:
             num_classes = None
@@ -803,8 +804,7 @@ class GCNNet(Base):
             x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -823,8 +823,6 @@ class GCNNet(Base):
         # build mlp layers
         for layer in self.mlp:
             x = layer(x)
-            if self.mlp_dropout > 0:
-                x = mlx.nn.Dropout(p=self.mlp_dropout)(x)
         x = self.final_mlp(x)
 
         return x
@@ -872,6 +870,7 @@ class GINENet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.mlp_dropout = mlp_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
         self.is_fitted = False
         if num_classes == 1:
             num_classes = None
@@ -929,8 +928,7 @@ class GINENet(Base):
             x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -949,8 +947,6 @@ class GINENet(Base):
         # build mlp layers
         for layer in self.mlp:
             x = layer(x)
-            if self.mlp_dropout > 0:
-                x = mlx.nn.Dropout(p=self.mlp_dropout)(x)
         x = self.final_mlp(x)
 
         return x
@@ -995,6 +991,7 @@ class GSAGENet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.mlp_dropout = mlp_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
         self.is_fitted = False
         if num_classes == 1:
             num_classes = None
@@ -1042,8 +1039,7 @@ class GSAGENet(Base):
             x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -1062,8 +1058,6 @@ class GSAGENet(Base):
         # build mlp layers
         for layer in self.mlp:
             x = layer(x)
-            if self.mlp_dropout > 0:
-                x = mlx.nn.Dropout(p=self.mlp_dropout)(x)
         x = self.final_mlp(x)
 
         return x
@@ -1112,6 +1106,7 @@ class GATNet(Base):
         self.pooling = pooling
         self.graph_dropout = graph_dropout
         self.mlp_dropout = mlp_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
         self.is_fitted = False
         if num_classes == 1:
             num_classes = None
@@ -1170,14 +1165,12 @@ class GATNet(Base):
                 x = conv(edge_index, x, edge_features)
                 x = norm(x)
                 x = act_fn(x)
-                if self.graph_dropout > 0:
-                    x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+                x = self.graph_drop(x)
             else:
                 x = conv(edge_index, x)
                 x = norm(x)
                 x = act_fn(x)
-                if self.graph_dropout > 0:
-                    x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+                x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -1196,8 +1189,6 @@ class GATNet(Base):
         # build mlp layers
         for layer in self.mlp:
             x = layer(x)
-            if self.mlp_dropout > 0:
-                x = mlx.nn.Dropout(p=self.mlp_dropout)(x)
         x = self.final_mlp(x)
 
         return x
@@ -1675,8 +1666,6 @@ class MLP(MLP_Baseline):
         # build mlp layers
         for layer in self.mlp:
             x = layer(x)
-            if self.dropout > 0:
-                x = mlx.nn.Dropout(p=self.dropout)(x)
         x = self.final_mlp(x)
 
         return x

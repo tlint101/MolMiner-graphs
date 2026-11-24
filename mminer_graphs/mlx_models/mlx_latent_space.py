@@ -47,7 +47,7 @@ class Base(mlx.nn.Module):
         test_labels = []
 
         # evaluate
-        mx.eval()
+        model.eval()
         sig = inspect.signature(model.__call__)
         for data in tqdm(train_loader, desc="Converting training graph data"):
             if "edge_features" in sig.parameters and hasattr(data, "edge_features"):  # for edge features
@@ -102,7 +102,7 @@ class Base(mlx.nn.Module):
         space = []
 
         # evaluate
-        mx.eval()
+        model.eval()
         sig = inspect.signature(model.__call__)
         for data in tqdm(data_loader, desc="Converting graph data"):
             if "edge_features" in sig.parameters and hasattr(data, "edge_features"):  # for edge features
@@ -169,6 +169,7 @@ class GCN(Base):
         self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
         self.is_fitted = False
 
         # set graph layers
@@ -190,8 +191,7 @@ class GCN(Base):
         act_fn = MLX_ACT[self.act]
         for conv in self.gcn_conv:
             x = act_fn(conv(edge_index, x))
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -228,6 +228,7 @@ class GINE(Base):
         self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
 
         # set graph layers
         self.gine_conv = []
@@ -262,8 +263,7 @@ class GINE(Base):
             x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -297,6 +297,7 @@ class GSAGE(Base):
         self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
 
         # set graph layers
         self.sage_conv = []
@@ -321,8 +322,7 @@ class GSAGE(Base):
             x = conv(edge_index, x)
             x = norm(x)
             x = act_fn(x)
-            if self.graph_dropout > 0:
-                x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+            x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
@@ -361,6 +361,7 @@ class GAT(Base):
         self.act = act
         self.pooling = pooling
         self.graph_dropout = graph_dropout
+        self.graph_drop = mlx.nn.Dropout(p=graph_dropout)
 
         # set graph layers
         self.gat_conv = []
@@ -395,14 +396,12 @@ class GAT(Base):
                 x = conv(edge_index, x, edge_features)
                 x = norm(x)
                 x = act_fn(x)
-                if self.graph_dropout > 0:
-                    x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+                x = self.graph_drop(x)
             else:
                 x = conv(edge_index, x)
                 x = norm(x)
                 x = act_fn(x)
-                if self.graph_dropout > 0:
-                    x = mlx.nn.Dropout(p=self.graph_dropout)(x)
+                x = self.graph_drop(x)
 
         # readout layer
         x = _global_pooling(x, batch_indices, pool_type=self.pooling)
