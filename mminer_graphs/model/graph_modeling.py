@@ -1826,12 +1826,12 @@ def train_mlp_c(model, train_loader, optimizer, criterion, device):
 @torch.no_grad()
 def test_mlp_c(model, test_loader, criterion, device):
     """Support function for testing the torch mlp model"""
-    global mcc, recall, f1, roc_auc
     model.eval()
     total_loss = 0
     correct = 0
     total = 0
     predictions = []
+    all_proba = []
     all_labels = []
 
     for data, y in test_loader:
@@ -1844,14 +1844,17 @@ def test_mlp_c(model, test_loader, criterion, device):
         loss = criterion(out, y)
         total_loss += loss.item()
         pred = out.argmax(dim=1)
+        proba = F.softmax(out, dim=1)[:, 1]
         correct += (pred == y).sum().item()
         total += y.size(0)
-        # all prediction labels
+        # all prediction labels and probabilities
         predictions.append(pred)
+        all_proba.append(proba)
         all_labels.append(y)
 
     # precision values
     predictions = torch.cat(predictions).cpu()
+    all_proba = torch.cat(all_proba).cpu()
     all_labels = torch.cat(all_labels).cpu()
 
     # true positives
@@ -1867,7 +1870,7 @@ def test_mlp_c(model, test_loader, criterion, device):
     mcc = matthews_corrcoef(all_labels, predictions)
     recall = recall_score(all_labels, predictions)
     f1 = f1_score(all_labels, predictions)
-    roc_auc = roc_auc_score(all_labels, predictions)
+    roc_auc = roc_auc_score(all_labels, all_proba)
 
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
 
@@ -2018,12 +2021,12 @@ def train_c(model, train_loader, optimizer, criterion, device):
 @torch.no_grad()
 def test_c(model, test_loader, criterion, device):
     """Support function for testing a classification model"""
-    global mcc, recall, f1, roc_auc
     model.eval()
     total_loss = 0
     correct = 0
     total = 0
     predictions = []
+    all_proba = []
     all_labels = []
 
     # check device type
@@ -2038,14 +2041,17 @@ def test_c(model, test_loader, criterion, device):
         loss = criterion(out, data.y)
         total_loss += loss.item()
         pred = out.argmax(dim=1)
+        proba = F.softmax(out, dim=1)[:, 1]
         correct += (pred == data.y).sum().item()
         total += data.num_graphs
-        # all prediction labels
+        # all prediction labels and probabilities
         predictions.append(pred)
+        all_proba.append(proba)
         all_labels.append(data.y)
 
     # precision values
     predictions = torch.cat(predictions).cpu()
+    all_proba = torch.cat(all_proba).cpu()
     all_labels = torch.cat(all_labels).cpu()
 
     # true positives
@@ -2061,7 +2067,7 @@ def test_c(model, test_loader, criterion, device):
     mcc = matthews_corrcoef(all_labels, predictions)
     recall = recall_score(all_labels, predictions)
     f1 = f1_score(all_labels, predictions)
-    roc_auc = roc_auc_score(all_labels, predictions)
+    roc_auc = roc_auc_score(all_labels, all_proba)
 
     return test_loss, test_acc, test_prec, mcc, recall, f1, roc_auc
 

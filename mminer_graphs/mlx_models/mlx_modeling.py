@@ -50,25 +50,24 @@ def get_metrics(model: mlx.nn.Module, test_loader: Dataloader, batch_size: int =
     :return:
     """
 
-    y_pred = model.predict(test_loader, batch_size=batch_size, binary=binary, cutoff=cutoff, return_type=return_type,
-                           add_feats=add_feats, pbar=pbar)
     # extract true values
-    true_y = mx.concatenate([batch.y for batch in test_loader], axis=0)
-
-    # convert to np array
-    y_pred = np.array(y_pred)
-    true_y = np.array(true_y)
+    true_y = np.array(mx.concatenate([batch.y for batch in test_loader], axis=0))
 
     if model.task == "Classification":
+        y_proba = np.array(model.predict(test_loader, batch_size=batch_size, binary=False, cutoff=cutoff,
+                                         return_type=return_type, add_feats=add_feats, pbar=pbar))
+        y_pred = (y_proba >= cutoff).astype(int)
         acc = accuracy_score(true_y, y_pred)
         prec = precision_score(true_y, y_pred)
         recall = recall_score(true_y, y_pred)
         f1 = f1_score(true_y, y_pred)
         mcc = matthews_corrcoef(true_y, y_pred)
-        roc_auc = roc_auc_score(true_y, y_pred)
+        roc_auc = roc_auc_score(true_y, y_proba)
         metrics_dict = {'Accuracy': [acc], 'Precision': [prec], 'Recall': [recall], 'F1': [f1], 'MCC': [mcc],
                         'ROC_AUC': [roc_auc]}
     elif model.task == "Regression":
+        y_pred = np.array(model.predict(test_loader, batch_size=batch_size, binary=binary, cutoff=cutoff,
+                                        return_type=return_type, add_feats=add_feats, pbar=pbar))
         mae = mean_absolute_error(true_y, y_pred)
         rmse = root_mean_squared_error(true_y, y_pred)
         r2 = r2_score(true_y, y_pred)
