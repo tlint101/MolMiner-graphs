@@ -439,8 +439,10 @@ class Base(nn.Module):
             # combine predictions from batch, concact and extract mx array
             if self.task == "Regression":
                 predictions = torch.cat(all_preds)
-                if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
-                    predictions = predictions * self.y_std + self.y_mean
+                if self.y_mean is not None and self.y_std is not None:
+                    y_mean = torch.as_tensor(self.y_mean, device=predictions.device, dtype=predictions.dtype)
+                    y_std = torch.as_tensor(self.y_std, device=predictions.device, dtype=predictions.dtype)
+                    predictions = predictions * y_std + y_mean
             else:
                 predictions = torch.cat(all_preds)
 
@@ -471,17 +473,21 @@ class Base(nn.Module):
 
     def save(self, filepath: str):
         """
-        Save a fitted torch model.
+        Save a fitted torch model. For regression models, also persists y_mean and y_std.
         :param filepath: str
             The filepath for the saved torch model. Must be in .pth format.
         :return:
         """
-        torch.save(self.state_dict(), filepath)
+        state = dict(self.state_dict())
+        if self.task == "Regression" and self.y_mean is not None and self.y_std is not None:
+            state["y_mean"] = torch.as_tensor(self.y_mean, dtype=torch.float32).cpu()
+            state["y_std"] = torch.as_tensor(self.y_std, dtype=torch.float32).cpu()
+        torch.save(state, filepath)
         return "Model saved!"
 
     def load(self, model_path: str = None, param_path: Optional[str] = None, add_feats: Optional[np.ndarray] = None,
-             node_dim: int = 142, edge_feat_dim: int = 16, num_classes: int = 2, criterion: str = "cross_entropy",
-             device: str = "auto"):
+             node_dim: int = 142, edge_feat_dim: int = 16, num_classes: Optional[int] = None,
+             criterion: str = "cross_entropy", device: str = "auto"):
         """
         Load a torch model from a .pth file.
         :param param_path: str
@@ -495,61 +501,79 @@ class Base(nn.Module):
             Set the node dimension for the graph. Will default to 142.
         :param edge_feat_dim: int
             Set the dimensions of the edge features/attributes. Will default to 16.
-        :param num_classes: int
-            Set the number of classes for the model. Will default to 2..
+        :param num_classes: Optional[int]
+            Set the number of classes for the model (only used with param_path; defaults to self.classes).
         :param criterion: str
             Set the model loss function.
         :param device: str
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :return:
         """
-        model = self
+        fit_device = get_device(device)
 
         if param_path:
             # load params from json file
             with open(param_path, 'r') as f:
                 params = json.load(f)
 
-            device = get_device(device)
             # additional params not found in json file
             params['node_dim'] = node_dim
             params['edge_feat_dim'] = edge_feat_dim
-            params['num_classes'] = num_classes
-            params['criterion'] = criterion
-            params['device'] = device
+            params['num_classes'] = self.classes if num_classes is None else num_classes
+            params['add_feats'] = add_feats
 
             # load params by model
-            if model.__class__ == GCNNet:
+            if self.__class__ == GCNNet:
                 for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
-                                    "mlp_dropout", "add_feats"]
-            elif model.__class__ == GINENet:
+                                    "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GINNet:
+                for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
+                                    "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GINENet:
                 for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                    "mlp_dropout", "add_feats"]
+                                    "graph_dropout", "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GSAGENet:
+                for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
+                                    "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GATNet:
+                for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "heads", "graph_layers", "mlp_layers",
+                                    "graph_dropout", "mlp_dropout", "num_classes", "add_feats"]
             else:
-                raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
-            model_params = {param_key: params[param_key] for param_key in for_model_params}
+                raise ValueError("Cannot identify model class! Only 'GCNNet', 'GINNet', 'GINENet', 'GSAGENet', or 'GATNet' supported!")
 
-            # # to check loading of model
-            # print(model_params)
-
-            # build model, an instance of GNN
-            build_model = model.__class__(**model_params)
-
-            # load saved model
-            build_model.load_state_dict(torch.load(model_path))
-            model.is_fitted = True
-            print("Model loaded!")
-
-            return build_model
+            model_params = {k: params[k] for k in for_model_params if k in params}
+            model = self.__class__(**model_params)
         else:
             model = self
-            device = get_device(device)
-            # load model and set to eval mode
-            model.load_state_dict(torch.load(model_path, map_location=device))
-            model.is_fitted = True
-            model.eval()
 
-            return model
+        weights = dict(torch.load(model_path, map_location=fit_device))
+        y_mean = weights.pop("y_mean", None)
+        y_std = weights.pop("y_std", None)
+
+        if model.task == "Regression":
+            if y_mean is None or y_std is None:
+                raise ValueError(
+                    "Mismatch! Model is configured for 'Regression', "
+                    "but saved weights do not contain 'y_mean' and 'y_std'."
+                )
+        elif y_mean is not None or y_std is not None:
+            raise ValueError(
+                "Mismatch! Saved weights contain 'y_mean'/'y_std' (Regression), "
+                "but model is configured for 'Classification'."
+            )
+
+        model.load_state_dict(weights)
+        model.to(fit_device)
+
+        if model.task == "Regression":
+            model.y_mean = torch.as_tensor(y_mean, dtype=torch.float32, device=fit_device)
+            model.y_std = torch.as_tensor(y_std, dtype=torch.float32, device=fit_device)
+
+        model.is_fitted = True
+        model.eval()
+        print("Model loaded!")
+
+        return model
 
     def _build_mlp(self, input_dim, mlp_layers, num_classes, dropout):
         """Dynamically build mlp layer. Method shared between graph neural networks."""
@@ -1586,8 +1610,10 @@ class MLP_Baseline(nn.Module):
         # combine predictions from batch, concact and extract mx array
         if self.task == "Regression":
             predictions = torch.cat(all_preds)
-            if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
-                predictions = predictions * self.y_std + self.y_mean
+            if self.y_mean is not None and self.y_std is not None:
+                y_mean = torch.as_tensor(self.y_mean, device=predictions.device, dtype=predictions.dtype)
+                y_std = torch.as_tensor(self.y_std, device=predictions.device, dtype=predictions.dtype)
+                predictions = predictions * y_std + y_mean
         else:
             predictions = torch.cat(all_preds)
 
@@ -1603,13 +1629,16 @@ class MLP_Baseline(nn.Module):
 
     def save(self, filepath: str):
         """
-        Save a fitted torch model.
+        Save a fitted torch model. For regression models, also persists y_mean and y_std.
         :param filepath: str
             The filepath for the saved torch model. Must be in .pth format.
         :return:
         """
-        model = self
-        torch.save(model.state_dict(), filepath)
+        state = dict(self.state_dict())
+        if self.task == "Regression" and self.y_mean is not None and self.y_std is not None:
+            state["y_mean"] = torch.as_tensor(self.y_mean, dtype=torch.float32).cpu()
+            state["y_std"] = torch.as_tensor(self.y_std, dtype=torch.float32).cpu()
+        torch.save(state, filepath)
         return "Model saved!"
 
     def load(self, model_path: Optional[str] = None, param_path: Optional[str] = None, device: str = "auto"):
@@ -1623,13 +1652,46 @@ class MLP_Baseline(nn.Module):
             Set the device for the tensors. Can be "auto", "cuda", "mps", or "cpu".
         :return:
         """
-        model = self
-        # load model and set to eval mode
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        fit_device = get_device(device)
+
+        if param_path is not None:
+            with open(param_path, 'r') as f:
+                params = json.load(f)
+            params.setdefault('num_classes', self.classes)
+            for_model_params = ["input_size", "hidden_size", "layers", "dropout", "num_classes", "reduce_size", "act"]
+            model_params = {k: params[k] for k in for_model_params if k in params}
+            model = self.__class__(**model_params)
+        else:
+            model = self
+
+        weights = dict(torch.load(model_path, map_location=fit_device))
+        y_mean = weights.pop("y_mean", None)
+        y_std = weights.pop("y_std", None)
+
+        if model.task == "Regression":
+            if y_mean is None or y_std is None:
+                raise ValueError(
+                    "Mismatch! Model is configured for 'Regression', "
+                    "but saved weights do not contain 'y_mean' and 'y_std'."
+                )
+        elif y_mean is not None or y_std is not None:
+            raise ValueError(
+                "Mismatch! Saved weights contain 'y_mean'/'y_std' (Regression), "
+                "but model is configured for 'Classification'."
+            )
+
+        model.load_state_dict(weights)
+        model.to(fit_device)
+
+        if model.task == "Regression":
+            model.y_mean = torch.as_tensor(y_mean, dtype=torch.float32, device=fit_device)
+            model.y_std = torch.as_tensor(y_std, dtype=torch.float32, device=fit_device)
+
         model.is_fitted = True
         model.eval()
-
         print("Model loaded!")
+
+        return model
 
 
 class MLP(MLP_Baseline):

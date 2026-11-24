@@ -512,7 +512,7 @@ class Base(mlx.nn.Module):
             output = mx.concatenate(all_preds, axis=0)  # ensure batches are uniform
             output_flat = mx.squeeze(output)
             predictions = output_flat
-            if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
+            if self.y_mean is not None and self.y_std is not None:
                 predictions = predictions * self.y_std + self.y_mean
         else:
             predictions = mx.concatenate(all_preds, axis=0)
@@ -527,19 +527,19 @@ class Base(mlx.nn.Module):
 
     def save(self, filename: str):
         """
-        Save a fitted MLX model.
+        Save a fitted MLX model. For regression models, also persists y_mean and y_std.
         :param filename: str
             The filepath for the saved MLX model. Must be in '.npz' format.
         :return:
         """
-        model = self
-
-        # flatten model
-        params = tree_flatten(model.parameters())
-        mx.savez(filename, **dict(params))
+        save_dict = dict(tree_flatten(self.parameters()))
+        if self.task == "Regression" and self.y_mean is not None and self.y_std is not None:
+            save_dict["y_mean"] = mx.array(self.y_mean)
+            save_dict["y_std"] = mx.array(self.y_std)
+        mx.savez(filename, **save_dict)
 
     def load(self, model_path: str = None, param_path: Optional[str] = None, add_feats: Optional[np.ndarray] = None,
-             node_dim: int = 142, edge_feat_dim: int = 16, criterion: str = "cross_entropy"):
+             node_dim: int = 142, edge_feat_dim: int = 16, criterion: Optional[str] = None):
         """
         Load a saved MLX model. This will return a model with the loaded parameters and model architecture.
         :param model_path: str
@@ -551,9 +551,9 @@ class Base(mlx.nn.Module):
         :param node_dim: int
             The length of feature vector per node. Must match what was used for the saved mlx model.
         :param edge_feat_dim: int
-            The dimensions of the hidden layers in teh graph network. Must match what was used for the saved mlx model.
-        :param criterion: str
-            Set the model loss function.
+            The dimensions of the hidden layers in the graph network. Must match what was used for the saved mlx model.
+        :param criterion: Optional[str]
+            Optional loss function name to cross-check against model task; inferred from model.task if None.
         :return:
         """
 
@@ -566,67 +566,71 @@ class Base(mlx.nn.Module):
             params['node_dim'] = node_dim
             params['edge_feat_dim'] = edge_feat_dim
             params['num_classes'] = self.classes
-            params['criterion'] = criterion
             params['add_feats'] = add_feats
 
             # load params by model
-            if model.__class__ == GCNNet:
+            if self.__class__ == GCNNet:
                 for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
-                                    "mlp_dropout", "add_feats"]
-            elif model.__class__ == GINENet:
+                                    "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GINENet:
                 for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                    "graph_dropout", "mlp_dropout", "add_feats"]
-            elif model.__class__ == GSAGENet:
-                for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "graph_layers", "mlp_layers",
-                                    "graph_dropout", "mlp_dropout", "add_feats"]
-            elif model.__class__ == GATNet:
+                                    "graph_dropout", "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GSAGENet:
+                for_model_params = ["node_dim", "hidden_dim", "graph_layers", "mlp_layers", "graph_dropout",
+                                    "mlp_dropout", "num_classes", "add_feats"]
+            elif self.__class__ == GATNet:
                 for_model_params = ["node_dim", "edge_feat_dim", "hidden_dim", "heads", "graph_layers", "mlp_layers",
-                                    "mlp_dropout", "add_feats"]
+                                    "graph_dropout", "mlp_dropout", "num_classes", "add_feats"]
             else:
-                raise ValueError("Cannot identify model class! Only 'GCNNet' or 'GINENet' supported!")
-            model_params = {param_key: params[param_key] for param_key in for_model_params}
-            # # to check loading of model
-            # print(model_params)
+                raise ValueError("Cannot identify model class! Only 'GCNNet', 'GINENet', 'GSAGENet', or 'GATNet' supported!")
+            model_params = {k: params[k] for k in for_model_params if k in params}
             model = self.__class__(**model_params)
         else:
             model = self
 
         # load weights
         weights = mx.load(model_path)
-        # separate model parameters from Regression scale
-        model_params = {k: v for k, v in weights.items() if k not in ['y_mean', 'y_std']}
-        model.update(tree_unflatten(list(model_params.items())))
 
-        # set Regression or Classification attributes
+        # determine Regression vs Classification and validate criterion if provided
         R_CRITERION = ['mse', 'huber', 'l1', 'smooth_l1']
         C_CRITERION = ['cross_entropy', 'nll', 'kl_divergence']
-        is_regression = criterion in R_CRITERION and (self.classes is None or self.classes == 1)
-        is_classification = criterion in C_CRITERION and (self.classes is not None and self.classes >= 2)
+        if criterion is None:
+            is_regression = model.classes is None or model.classes == 1
+            is_classification = model.classes is not None and model.classes >= 2
+        else:
+            is_regression = criterion in R_CRITERION and (model.classes is None or model.classes == 1)
+            is_classification = criterion in C_CRITERION and (model.classes is not None and model.classes >= 2)
 
-        # check model conditions
+        # validate task match before loading weights
         if is_regression:
-            # check weight
             if 'y_mean' not in weights or 'y_std' not in weights:
-                raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Regression', "
-                                 "but model is configured for 'Classification'?")
+                raise ValueError(
+                    "Mismatch! Model is configured for 'Regression', "
+                    "but saved weights do not contain 'y_mean' and 'y_std'."
+                )
             model.task = "Regression"
             model.y_mean = weights['y_mean']
             model.y_std = weights['y_std']
-
         elif is_classification:
-            # check weight
             if 'y_mean' in weights or 'y_std' in weights:
-                raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Classification', "
-                                 "but model is configured for 'Regression'?")
+                raise ValueError(
+                    "Mismatch! Saved weights contain 'y_mean'/'y_std' (Regression), "
+                    "but model is configured for 'Classification'."
+                )
             model.task = "Classification"
         else:
             raise ValueError(
-                f"Mismatch! criterion='{criterion}', num_classes={self.classes}. "
+                f"Mismatch! criterion='{criterion}', num_classes={model.classes}. "
                 "Check model params!"
             )
 
-        # add tags
+        # separate model parameters from Regression scale and load weights
+        model_params = {k: v for k, v in weights.items() if k not in ['y_mean', 'y_std']}
+        model.update(tree_unflatten(list(model_params.items())))
+
+        # add tags and switch to eval mode
         model.is_fitted = True
+        model.eval()
         print("Model loaded!")
 
         return model
@@ -1493,7 +1497,7 @@ class MLP_Baseline(mlx.nn.Module):
         # if regression, get set scale
         if self.task == "Regression":
             predictions = mx.squeeze(predictions)
-            if hasattr(self, 'y_mean') and hasattr(self, 'y_std'):
+            if self.y_mean is not None and self.y_std is not None:
                 predictions = predictions * self.y_std + self.y_mean
 
         # conditional check to output as list or tensor
@@ -1506,29 +1510,29 @@ class MLP_Baseline(mlx.nn.Module):
 
     def save(self, filename: str):
         """
-        Save a fitted MLX model.
+        Save a fitted MLX model. For regression models, also persists y_mean and y_std.
         :param filename: str
             The filepath for the saved MLX model. Must be in '.npz' format.
         :return:
         """
-        model = self
-
-        # flatten model
-        params = tree_flatten(model.parameters())
-        mx.savez(filename, **dict(params))
+        save_dict = dict(tree_flatten(self.parameters()))
+        if self.task == "Regression" and self.y_mean is not None and self.y_std is not None:
+            save_dict["y_mean"] = mx.array(self.y_mean)
+            save_dict["y_std"] = mx.array(self.y_std)
+        mx.savez(filename, **save_dict)
 
     def load(self, model_path: Optional[str] = None, param_path: Optional[str] = None,
-             num_classes: Union[int, None] = 2, criterion: str = "cross_entropy"):
+             num_classes: Optional[int] = None, criterion: Optional[str] = None):
         """
         Load saved model state.
         :param model_path: Optional[str]
-            Path to saved torch model.
+            Path to saved MLX model.
         :param param_path: Optional[str]
             Set the path for the saved parameters in .json file.
-        :param num_classes: Union[int, None]
-            The number of classes for the output layer. Must match what was used for the saved mlx model.
-        :param criterion: str
-            Set the model loss function.
+        :param num_classes: Optional[int]
+            The number of classes for the output layer (only used with param_path; defaults to self.classes).
+        :param criterion: Optional[str]
+            Optional loss function name to cross-check against model task; inferred from model.task if None.
         :return:
         """
 
@@ -1538,52 +1542,57 @@ class MLP_Baseline(mlx.nn.Module):
                 params = json.load(f)
 
             # additional params not found in json file
-            params['num_classes'] = self.classes
+            params['num_classes'] = self.classes if num_classes is None else num_classes
 
-            for_model_params = None
-            print("for_model_params needs to be included!")
-            # load model with params
-            model_params = {param_key: params[param_key] for param_key in for_model_params}
+            for_model_params = ["input_size", "hidden_size", "layers", "dropout", "num_classes", "reduce_size", "act"]
+            model_params = {k: params[k] for k in for_model_params if k in params}
             model = self.__class__(**model_params)
         else:
             model = self
 
         # load model and set to eval mode
         weights = mx.load(model_path)
-        # separate model parameters from Regression scale
-        model_params = {k: v for k, v in weights.items() if k not in ['y_mean', 'y_std']}
-        model.update(tree_unflatten(list(model_params.items())))
 
-        # set Regression or Classification attributes
+        # determine Regression vs Classification and validate criterion if provided
         R_CRITERION = ['mse', 'huber', 'l1', 'smooth_l1']
         C_CRITERION = ['cross_entropy', 'nll', 'kl_divergence']
-        is_regression = criterion in R_CRITERION and (self.classes is None or self.classes == 1)
-        is_classification = criterion in C_CRITERION and (self.classes is not None and self.classes >= 2)
+        if criterion is None:
+            is_regression = model.classes is None or model.classes == 1
+            is_classification = model.classes is not None and model.classes >= 2
+        else:
+            is_regression = criterion in R_CRITERION and (model.classes is None or model.classes == 1)
+            is_classification = criterion in C_CRITERION and (model.classes is not None and model.classes >= 2)
 
-        # check model conditions
+        # validate task match before loading weights
         if is_regression:
-            # check weight
             if 'y_mean' not in weights or 'y_std' not in weights:
-                raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Regression', "
-                                 "but model is configured for 'Classification'?")
+                raise ValueError(
+                    "Mismatch! Model is configured for 'Regression', "
+                    "but saved weights do not contain 'y_mean' and 'y_std'."
+                )
             model.task = "Regression"
             model.y_mean = weights['y_mean']
             model.y_std = weights['y_std']
-
         elif is_classification:
-            # check weight
             if 'y_mean' in weights or 'y_std' in weights:
-                raise ValueError(f"Mismatch! criterion='{criterion}' is set for 'Classification', "
-                                 "but model is configured for 'Regression'?")
+                raise ValueError(
+                    "Mismatch! Saved weights contain 'y_mean'/'y_std' (Regression), "
+                    "but model is configured for 'Classification'."
+                )
             model.task = "Classification"
         else:
             raise ValueError(
-                f"Mismatch! criterion='{criterion}', num_classes={self.classes}. "
+                f"Mismatch! criterion='{criterion}', num_classes={model.classes}. "
                 "Check model params!"
             )
 
-        # add tags
+        # separate model parameters from Regression scale and load weights
+        model_params = {k: v for k, v in weights.items() if k not in ['y_mean', 'y_std']}
+        model.update(tree_unflatten(list(model_params.items())))
+
+        # add tags and switch to eval mode
         model.is_fitted = True
+        model.eval()
         print("Model loaded!")
 
         return model
