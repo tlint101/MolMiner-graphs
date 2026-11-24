@@ -211,7 +211,6 @@ class Base(nn.Module):
         :return:
         """
         # set model to current instance
-        global y_mean, y_std
         model = self
 
         # check if on the same device
@@ -294,9 +293,10 @@ class Base(nn.Module):
                 all_y_list.append(data.y)
             all_y = torch.cat(all_y_list) if all_y_list else None
 
-            y_mean = torch.mean(all_y.float())
-            y_std = torch.std(all_y.float())
-            if y_std == 0: y_std = 1.0
+            y_mean = torch.mean(all_y.float()).item()
+            y_std = torch.std(all_y.float()).item()
+            if y_std == 0:
+                y_std = 1.0
 
             for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
                 train_loss, train_mae, train_rmse, train_r2 = train_r(model, train_loader, optimizer, self.criterion,
@@ -390,6 +390,7 @@ class Base(nn.Module):
 
         # check if on the same device
         fit_device = get_device(device)
+        model.to(fit_device)
         print(f"Prediction running on {fit_device}")
 
         # evaluation mode
@@ -566,8 +567,8 @@ class Base(nn.Module):
         model.to(fit_device)
 
         if model.task == "Regression":
-            model.y_mean = torch.as_tensor(y_mean, dtype=torch.float32, device=fit_device)
-            model.y_std = torch.as_tensor(y_std, dtype=torch.float32, device=fit_device)
+            model.y_mean = float(torch.as_tensor(y_mean).item())
+            model.y_std = float(torch.as_tensor(y_std).item())
 
         model.is_fitted = True
         model.eval()
@@ -1360,7 +1361,6 @@ class MLP_Baseline(nn.Module):
         :return:
         """
         # set model
-        global y_mean, y_std
         model = self
 
         # check if on the same device
@@ -1461,9 +1461,10 @@ class MLP_Baseline(nn.Module):
                 all_y_list.append(y_batch)
             all_y = torch.cat(all_y_list) if all_y_list else None
 
-            y_mean = torch.mean(all_y.float())
-            y_std = torch.std(all_y.float())
-            if y_std == 0: y_std = 1.0
+            y_mean = torch.mean(all_y.float()).item()
+            y_std = torch.std(all_y.float()).item()
+            if y_std == 0:
+                y_std = 1.0
 
             for epoch in tqdm(range(epochs), desc="Epoch", disable=not pbar):
                 train_loss, train_mae, train_rmse, train_r2 = train_mlp_r(model, train_loader, optimizer,
@@ -1547,6 +1548,7 @@ class MLP_Baseline(nn.Module):
 
         # check if on the same device
         fit_device = get_device(device)
+        model.to(fit_device)
         print(f"Prediction running on {fit_device}")
 
         # check dataset input:
@@ -1558,6 +1560,8 @@ class MLP_Baseline(nn.Module):
         if not isinstance(data, torch.Tensor):
             # convert to tensor
             data = torch.tensor(data, dtype=torch.float32, device=fit_device)
+        else:
+            data = data.to(device=fit_device, dtype=torch.float32)
         # make sure data is 2D
         if data.ndim == 1:
             data = data.unsqueeze(0)  # shape [1, features]
@@ -1671,8 +1675,8 @@ class MLP_Baseline(nn.Module):
         model.to(fit_device)
 
         if model.task == "Regression":
-            model.y_mean = torch.as_tensor(y_mean, dtype=torch.float32, device=fit_device)
-            model.y_std = torch.as_tensor(y_std, dtype=torch.float32, device=fit_device)
+            model.y_mean = float(torch.as_tensor(y_mean).item())
+            model.y_std = float(torch.as_tensor(y_std).item())
 
         model.is_fitted = True
         model.eval()
@@ -1853,13 +1857,15 @@ def train_mlp_r(model, train_loader, optimizer, criterion, device, y_mean, y_std
     total_loss = 0
     all_preds = []
     all_labels = []
+    y_mean_val = float(y_mean.item()) if isinstance(y_mean, torch.Tensor) else float(y_mean)
+    y_std_val = float(y_std.item()) if isinstance(y_std, torch.Tensor) else float(y_std)
 
     for data, y in train_loader:
         data = data.to(device)
-        # standardize input
-        y = (y - y_mean) / y_std
-        y = y.view(-1, 1)  # ensure same shape
         y = y.to(device)
+        # standardize input
+        y = (y.float() - y_mean_val) / y_std_val
+        y = y.view(-1, 1)  # ensure same shape
 
         # forward pass
         out = model(data)
@@ -1873,13 +1879,9 @@ def train_mlp_r(model, train_loader, optimizer, criterion, device, y_mean, y_std
         all_preds.append(out.detach())
         all_labels.append(y.detach())
 
-    # combine metrics
-    predictions = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-
-    # unscale predictions
-    all_preds = predictions * y_std + y_mean
-    all_labels = all_labels * y_std + y_mean
+    # combine metrics and unscale on device, then move to CPU numpy for sklearn
+    all_preds = (torch.cat(all_preds) * y_std_val + y_mean_val).cpu().numpy()
+    all_labels = (torch.cat(all_labels) * y_std_val + y_mean_val).cpu().numpy()
 
     # average loss
     train_loss = total_loss / len(train_loader)
@@ -1899,18 +1901,19 @@ def train_mlp_r(model, train_loader, optimizer, criterion, device, y_mean, y_std
 @torch.no_grad()
 def test_mlp_r(model, test_loader, criterion, device, y_mean, y_std):
     """Support function for testing the torch mlp model"""
-    global mcc, recall, f1, roc_auc
     model.eval()
     total_loss = 0
     predictions = []
     all_labels = []
+    y_mean_val = float(y_mean.item()) if isinstance(y_mean, torch.Tensor) else float(y_mean)
+    y_std_val = float(y_std.item()) if isinstance(y_std, torch.Tensor) else float(y_std)
 
     for data, y in test_loader:
         data = data.to(device)
-        # standardize input
-        y = (y - y_mean) / y_std
-        y = y.view(-1, 1)  # ensure same shape
         y = y.to(device)
+        # standardize input
+        y = (y.float() - y_mean_val) / y_std_val
+        y = y.view(-1, 1)  # ensure same shape
 
         # forward pass
         out = model(data)
@@ -1921,13 +1924,9 @@ def test_mlp_r(model, test_loader, criterion, device, y_mean, y_std):
         predictions.append(out.detach())
         all_labels.append(y.detach())
 
-    # precision values
-    predictions = torch.cat(predictions).cpu()
-    all_labels = torch.cat(all_labels).cpu()
-
-    # unscale predictions
-    all_preds = predictions * y_std + y_mean
-    all_labels = all_labels * y_std + y_mean
+    # combine metrics and unscale on device, then move to CPU numpy for sklearn
+    all_preds = (torch.cat(predictions) * y_std_val + y_mean_val).cpu().numpy()
+    all_labels = (torch.cat(all_labels) * y_std_val + y_mean_val).cpu().numpy()
 
     # average loss
     test_loss = total_loss / len(test_loader)
@@ -2054,12 +2053,14 @@ def train_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
     total_loss = 0
     all_preds = []
     all_labels = []
+    y_mean_val = float(y_mean.item()) if isinstance(y_mean, torch.Tensor) else float(y_mean)
+    y_std_val = float(y_std.item()) if isinstance(y_std, torch.Tensor) else float(y_std)
 
     for data in train_loader:
-        # standardize input
-        data.y = (data.y - y_mean) / y_std
-        data.y = data.y.view(-1, 1)  # ensure same shape
         data = data.to(device)
+        # standardize input
+        data.y = (data.y.float() - y_mean_val) / y_std_val
+        data.y = data.y.view(-1, 1)  # ensure same shape
 
         # forward pass
         out = model(data)
@@ -2073,13 +2074,9 @@ def train_r(model, train_loader, optimizer, criterion, device, y_mean, y_std):
         all_preds.append(out.detach())
         all_labels.append(data.y.detach())
 
-    # combine metrics
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-
-    # unscale predictions
-    all_preds = all_preds * y_std + y_mean
-    all_labels = all_labels * y_std + y_mean
+    # combine metrics and unscale on device, then move to CPU numpy for sklearn
+    all_preds = (torch.cat(all_preds) * y_std_val + y_mean_val).cpu().numpy()
+    all_labels = (torch.cat(all_labels) * y_std_val + y_mean_val).cpu().numpy()
 
     # average loss
     train_loss = total_loss / len(train_loader)
@@ -2103,12 +2100,14 @@ def test_r(model, test_loader, criterion, device, y_mean, y_std):
     total_loss = 0
     predictions = []
     all_labels = []
+    y_mean_val = float(y_mean.item()) if isinstance(y_mean, torch.Tensor) else float(y_mean)
+    y_std_val = float(y_std.item()) if isinstance(y_std, torch.Tensor) else float(y_std)
 
     for data in test_loader:
-        # standardize output
-        data.y = (data.y - y_mean) / y_std
-        data.y = data.y.view(-1, 1)  # ensure same shape
         data = data.to(device)
+        # standardize output
+        data.y = (data.y.float() - y_mean_val) / y_std_val
+        data.y = data.y.view(-1, 1)  # ensure same shape
 
         # forward pass
         out = model(data)
@@ -2119,13 +2118,9 @@ def test_r(model, test_loader, criterion, device, y_mean, y_std):
         predictions.append(out.detach())
         all_labels.append(data.y.detach())
 
-    # combine metrics
-    all_preds = torch.cat(predictions).cpu()
-    all_labels = torch.cat(all_labels).cpu()
-
-    # unscale predictions
-    all_preds = all_preds * y_std + y_mean
-    all_labels = all_labels * y_std + y_mean
+    # combine metrics and unscale on device, then move to CPU numpy for sklearn
+    all_preds = (torch.cat(predictions) * y_std_val + y_mean_val).cpu().numpy()
+    all_labels = (torch.cat(all_labels) * y_std_val + y_mean_val).cpu().numpy()
 
     # average loss
     test_loss = total_loss / len(test_loader)

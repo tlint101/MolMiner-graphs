@@ -30,6 +30,7 @@ class Base(nn.Module):
         """
         # check if on the same device
         fit_device = get_device(device)
+        self.to(fit_device)
 
         # check dataset input:
         if isinstance(train_loader, list):
@@ -79,6 +80,7 @@ class Base(nn.Module):
         """
         # check if on the same device
         fit_device = get_device(device)
+        self.to(fit_device)
 
         # evaluation mode
         self.eval()
