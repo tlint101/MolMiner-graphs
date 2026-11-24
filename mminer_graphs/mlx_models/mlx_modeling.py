@@ -212,7 +212,7 @@ class Base(mlx.nn.Module):
     def fit(self, train_loader: Union[Dataloader, list], test_loader: Union[Dataloader, list], epochs: int = 10,
             optimizer: str = "adam", criterion: str = "cross_entropy", lr: float = 0.01, wt_decay: float = 0.0,
             batch_size: int = 1024, device: str = "auto", estop: Optional[Union[EarlyStopping, int]] = None, pbar=True,
-            verbose: bool = False, device_warn: bool = True, seed: int = 42, **kwargs):
+            verbose: bool = False, device_warn: bool = True, seed: int = 42, restore_best: bool = True, **kwargs):
         """
         Fit the model.
         :param train_loader: Union[mlx_graphs.loaders.Dataloader, list]
@@ -246,13 +246,16 @@ class Base(mlx.nn.Module):
             Option to print which tensor/model is on 'cpu', 'cuda' or 'gpu' (Apple Silicon).
         :param seed: int
             Set the seed.
+        :param restore_best: bool
+            If True (default), restore model weights from the best validation epoch at the end of training.
         :param kwargs: dict
             kwargs for a given criterion.
         :return:
         """
         global y_mean, y_std
-        # set model to current instance
+        # set model to current instance and reset training history
         model = self
+        self.metrics = Metrics()
         set_seed(seed)
 
         # check if on the same device
@@ -294,6 +297,14 @@ class Base(mlx.nn.Module):
         elif estop is not None and isinstance(estop, int):
             estop = EarlyStopping(monitor='val_loss', patience=estop, mode='min')
 
+        # track best weights according to estop monitor (default: lowest test_loss)
+        monitor_metric = estop.monitor if estop is not None else "val_loss"
+        monitor_mode = estop.mode if estop is not None else "min"
+        best_score = float("inf") if monitor_mode == "min" else -float("inf")
+        is_better = estop.monitor_op if estop is not None else (lambda cur, best: cur < best)
+        best_epoch = None
+        best_state = None
+
         # set loss and gradient function
         loss_and_grad_fn = mlx.nn.value_and_grad(model, self._forward_fn)
 
@@ -322,16 +333,23 @@ class Base(mlx.nn.Module):
                     print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
                           f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
+                # determine monitoring metric for best-weight tracking and early stopping
+                if monitor_metric == "val_loss":
+                    monitor = test_loss
+                elif monitor_metric == "val_acc":
+                    monitor = test_acc
+                else:
+                    raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
+
+                if is_better(monitor, best_score):
+                    best_score = monitor
+                    best_epoch = epoch
+                    if restore_best:
+                        mx.eval(model.parameters())
+                        best_state = [(k, mx.array(v)) for k, v in tree_flatten(model.parameters())]
+
                 # early stopping
                 if estop is not None:
-                    # determine monitoring metric
-                    if estop.monitor == "val_loss":
-                        monitor = test_loss
-                    elif estop.monitor == "val_acc":
-                        monitor = test_acc
-                    else:
-                        raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
-
                     estop(monitor)
 
                     if estop.early_stop:
@@ -369,19 +387,31 @@ class Base(mlx.nn.Module):
                     print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train R2: {train_r2:.4f} | "
                           f"Test Loss: {test_loss:.4f} | Test R2: {test_r2:.4f}")
 
+                # determine monitoring metric for best-weight tracking and early stopping
+                if monitor_metric == "val_loss":
+                    monitor = test_loss
+                else:
+                    raise ValueError("Only 'val_loss' monitors allowed!")
+
+                if is_better(monitor, best_score):
+                    best_score = monitor
+                    best_epoch = epoch
+                    if restore_best:
+                        mx.eval(model.parameters())
+                        best_state = [(k, mx.array(v)) for k, v in tree_flatten(model.parameters())]
+
                 # early stopping
                 if estop is not None:
-                    # determine monitoring metric
-                    if estop.monitor == "val_loss":
-                        monitor = test_loss
-                    else:
-                        raise ValueError("Only 'val_loss' monitors allowed!")
-
                     estop(monitor)
 
                     if estop.early_stop:
                         print(f"Early stopping triggered after {epoch + 1} epochs!")
                         break
+
+        # restore best-epoch weights
+        if restore_best and best_state is not None:
+            model.update(tree_unflatten(best_state))
+            mx.eval(model.parameters())
 
         # to unstandardize predictions
         if self.classes == 1 or self.classes is None:
@@ -392,9 +422,9 @@ class Base(mlx.nn.Module):
         self.is_fitted = True
 
         # get epoch
-        best_train_epoch = np.argmin(self.metrics.train_loss)
-        best_test_epoch = np.argmin(self.metrics.test_loss)
-        self.metrics.best_epoch = best_test_epoch.item()  # convert from np to int
+        best_train_epoch = int(np.argmin(self.metrics.train_loss))
+        best_test_epoch = best_epoch if best_epoch is not None else int(np.argmin(self.metrics.test_loss))
+        self.metrics.best_epoch = best_test_epoch
 
         if device_warn:
             if isinstance(self.classes, int) and self.classes > 1:  # classification
@@ -1209,7 +1239,7 @@ class MLP_Baseline(mlx.nn.Module):
             y_test: Union[list, np.ndarray], epochs: int = 10, optimizer: str = "adam",
             criterion: str = "cross_entropy", lr: float = 0.01, wt_decay: float = 0.0, batch_size: int = 1024,
             device: str = "auto", estop: Optional[Union[EarlyStopping, int]] = None, pbar: bool = True,
-            verbose: bool = False, device_warn: bool = True, seed: int = 42, **kwargs):
+            verbose: bool = False, device_warn: bool = True, seed: int = 42, restore_best: bool = True, **kwargs):
         """
         Fit the model. The x_train and y_train and x_test and y_test given will be internally converted into a torch
         tensor before fitting the model.
@@ -1245,13 +1275,16 @@ class MLP_Baseline(mlx.nn.Module):
             Determine whether to output train/test accuracy and loss for each epoch.
         :param device_warn: bool
             Option to print which tensor/model is on 'cpu', 'cuda', or 'mps'.
+        :param restore_best: bool
+            If True (default), restore model weights from the best validation epoch at the end of training.
         :param kwargs: dict
             kwargs for a given criterion.
         :return:
         """
         global y_mean, y_std
-        # set model
+        # set model and reset training history
         model = self
+        self.metrics = Metrics()
 
         # check if on the same device
         fit_device = get_device(device)
@@ -1299,6 +1332,14 @@ class MLP_Baseline(mlx.nn.Module):
         elif estop is not None and isinstance(estop, int):
             estop = EarlyStopping(monitor='val_loss', patience=estop, mode='min')
 
+        # track best weights according to estop monitor (default: lowest test_loss)
+        monitor_metric = estop.monitor if estop is not None else "val_loss"
+        monitor_mode = estop.mode if estop is not None else "min"
+        best_score = float("inf") if monitor_mode == "min" else -float("inf")
+        is_better = estop.monitor_op if estop is not None else (lambda cur, best: cur < best)
+        best_epoch = None
+        best_state = None
+
         # set loss and gradient function
         loss_and_grad_fn = mlx.nn.value_and_grad(model, self._loss_fn)
 
@@ -1327,16 +1368,23 @@ class MLP_Baseline(mlx.nn.Module):
                     print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
                           f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
 
+                # determine monitoring metric for best-weight tracking and early stopping
+                if monitor_metric == "val_loss":
+                    monitor = test_loss
+                elif monitor_metric == "val_acc":
+                    monitor = test_acc
+                else:
+                    raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
+
+                if is_better(monitor, best_score):
+                    best_score = monitor
+                    best_epoch = epoch
+                    if restore_best:
+                        mx.eval(model.parameters())
+                        best_state = [(k, mx.array(v)) for k, v in tree_flatten(model.parameters())]
+
                 # early stopping
                 if estop is not None:
-                    # determine monitoring metric
-                    if estop.monitor == "val_loss":
-                        monitor = test_loss
-                    elif estop.monitor == "val_acc":
-                        monitor = test_acc
-                    else:
-                        raise ValueError("Only 'val_loss' or 'val_acc' monitors allowed!")
-
                     estop(monitor)
 
                     if estop.early_stop:
@@ -1372,19 +1420,31 @@ class MLP_Baseline(mlx.nn.Module):
                     print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Train R2: {train_r2:.4f} | "
                           f"Test Loss: {test_loss:.4f} | Test R2: {test_r2:.4f}")
 
+                # determine monitoring metric for best-weight tracking and early stopping
+                if monitor_metric == "val_loss":
+                    monitor = test_loss
+                else:
+                    raise ValueError("Only 'val_loss' monitors allowed!")
+
+                if is_better(monitor, best_score):
+                    best_score = monitor
+                    best_epoch = epoch
+                    if restore_best:
+                        mx.eval(model.parameters())
+                        best_state = [(k, mx.array(v)) for k, v in tree_flatten(model.parameters())]
+
                 # early stopping
                 if estop is not None:
-                    # determine monitoring metric
-                    if estop.monitor == "val_loss":
-                        monitor = test_loss
-                    else:
-                        raise ValueError("Only 'val_loss' monitors allowed!")
-
                     estop(monitor)
 
                     if estop.early_stop:
                         print(f"Early stopping triggered after {epoch + 1} epochs!")
                         break
+
+        # restore best-epoch weights
+        if restore_best and best_state is not None:
+            model.update(tree_unflatten(best_state))
+            mx.eval(model.parameters())
 
         # to unstandardize predictions
         if self.classes == 1 or self.classes is None:
@@ -1395,9 +1455,9 @@ class MLP_Baseline(mlx.nn.Module):
         self.is_fitted = True
 
         # get epoch
-        best_train_epoch = np.argmin(self.metrics.train_loss)
-        best_test_epoch = np.argmin(self.metrics.test_loss)
-        self.metrics.best_epoch = best_test_epoch.item()  # convert from np to int
+        best_train_epoch = int(np.argmin(self.metrics.train_loss))
+        best_test_epoch = best_epoch if best_epoch is not None else int(np.argmin(self.metrics.test_loss))
+        self.metrics.best_epoch = best_test_epoch
 
         if device_warn:
             if isinstance(self.classes, int) and self.classes > 1:  # classification
