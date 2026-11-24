@@ -38,6 +38,7 @@ BOND_STEREO = [
     Chem.rdchem.BondStereo.STEREOE,
     Chem.rdchem.BondStereo.STEREOCIS,
     Chem.rdchem.BondStereo.STEREOTRANS,
+    'Unknown',
 ]
 
 # totoal length of bond features
