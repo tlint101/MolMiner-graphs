@@ -15,6 +15,14 @@ graph_type_dict = {
     "ClusterGraph": ClusterGraph,
 }
 
+GRAPH_EDGE_DIMS = {
+    "AtomGraph": 16,
+    "PharmacophoreGraph": 3,
+    "FunctionalGraph": 20,
+    "JunctionTreeGraph": 6,
+    "ClusterGraph": 6,
+}
+
 OPTIMIZERS = {
     "adam": torch.optim.Adam,
     "adamw": torch.optim.AdamW,
@@ -102,9 +110,10 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
 
     # bond features
     bond = np.array(graph.edge_features)
-    # if single atom
+    # if single atom or single-clique graph (0 edges)
     if len(bond) == 0:
-        bond = torch.empty((0, 16), dtype=torch.float)  # replace 16 with your edge_dim
+        edge_dim = GRAPH_EDGE_DIMS[graph_type]
+        bond = torch.empty((0, edge_dim), dtype=torch.float)
     # full mol
     else:
         bond = torch.tensor(bond, dtype=torch.float).contiguous()
@@ -113,10 +122,16 @@ def mol_to_graph(smi: str, label: Union[int, float] = None, graph_type: str = "A
     smiles = graph.smi
 
     if label is not None:
-        if isinstance(label, int):
-            y = torch.tensor([label], dtype=torch.long)
-        elif isinstance(label, float):
-            y = torch.tensor([label], dtype=torch.float32)
+        if isinstance(label, (bool, np.bool_)):
+            y = torch.tensor([int(label)], dtype=torch.long)
+        elif isinstance(label, (int, np.integer)):
+            y = torch.tensor([int(label)], dtype=torch.long)
+        elif isinstance(label, (float, np.floating)):
+            y = torch.tensor([float(label)], dtype=torch.float32)
+        else:
+            raise TypeError(
+                f"Unsupported label type {type(label).__name__}; expected int, float, numpy scalar, or None."
+            )
     else:
         y = None
 

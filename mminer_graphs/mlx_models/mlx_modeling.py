@@ -113,7 +113,8 @@ class MolToGraph:
             The molecular graph type to generate from smiles string. Can be 'AtomGraph', 'PharmacophoreGraph'
             'FunctionalGraph', 'JunctionTreeGraph', or 'ClusterGraph'.
         :param add_smi: bool
-            Whether to include the smiles string with the MLX Data object.
+            Whether to store the standardized SMILES string on `self.smi` (kept off `GraphData` because
+            `mlx_graphs` batching requires all `GraphData` attributes to be `mx.array`).
         :param add_feats: Optional[Union[np.array, list]]
             Include additional information to include with the molecular graph tensor. Must be given as a np.array or a
             list.
@@ -124,6 +125,7 @@ class MolToGraph:
             add_feats = np.array(add_feats)
         graph = mol_to_graph(smi=smi, label=label, graph_type=graph_type, add_smi=add_smi,
                              add_feats=add_feats, with_atom_index=with_atom_index)
+        self.smi = getattr(graph, "smi", None) if add_smi else None
         self.graph_data = _torch_to_mlx(graph)
 
 
@@ -2221,6 +2223,9 @@ def _torch_to_mlx(graph):
     for attr in graph.keys():
         attr_value = getattr(graph, attr)
         if attr_value is not None:
+            # Skip non-array metadata (e.g. SMILES string); mlx_graphs collate requires mx.array attributes
+            if attr == 'smi' or isinstance(attr_value, str):
+                continue
             # Convert to float32 by default, except edge_index
             if attr == 'edge_index':
                 mlx_dict[attr] = mx.array(attr_value, dtype=mx.int32)

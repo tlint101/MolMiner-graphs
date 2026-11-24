@@ -204,7 +204,7 @@ class AtomGraph(MolGraph):
                 ]
                 atom_feats += one_hot_encode(atom.GetChiralTag(), chiral_tags)
             except:
-                atom_feats += [0, 0]
+                atom_feats += [0, 0, 0, 0]
             atom_feats += [int(atom.HasProp('_ChiralityPossible'))]
 
         # check if atom is in ring
