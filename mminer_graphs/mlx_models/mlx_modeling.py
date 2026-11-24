@@ -659,9 +659,9 @@ class Base(mlx.nn.Module):
             self.initial_params = copy.deepcopy(dict(self.parameters()))
 
     def _loss_fn(self, y_hat, y, classes, parameters=None):
-        # normalize shape if number of class is 1
-        if classes == 1:
-            y = y_hat.reshape(-1, 1)
+        # ensure matching (N, 1) shapes for single-output regression
+        if classes == 1 or classes is None:
+            y_hat = y_hat.reshape(-1, 1)
             y = y.reshape(-1, 1)
 
         loss = mx.mean(self.criterion(y_hat, y))
