@@ -135,6 +135,15 @@ class Plots:
         if title is None:
             title = "Model Training History"
 
+        metric_labels = {
+            "loss": "Loss",
+            "accuracy": "Accuracy",
+            "precision": "Precision",
+            "mae": "MAE",
+            "rmse": "RMSE",
+            "r2": "R²",
+        }
+
         # plot
         if len(input_metrics) > 1:
             fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
@@ -155,12 +164,13 @@ class Plots:
                     test_metric = np.clip(test_metric, 0, clip)
 
                 # set plot as axis
+                label = metric_labels[input_metrics[x]]
                 current_ax = flat_axes[x]
                 current_ax.plot(train_metric, color=line_color[0])
                 current_ax.plot(test_metric, color=line_color[1])
                 current_ax.legend(["Train", "Test"], loc=legend_loc)
-                current_ax.set_title(f"Model {input_metrics[x].capitalize()}")
-                current_ax.set_ylabel(input_metrics[x].capitalize())
+                current_ax.set_title(f"Model {label}")
+                current_ax.set_ylabel(label)
                 current_ax.set_xlabel("Epoch")
                 current_ax.grid(False)
 
@@ -181,11 +191,12 @@ class Plots:
                 test_metric = np.clip(test_metric, 0, clip)
 
             # set plot as axis
+            label = metric_labels[input_metrics[0]]
             ax.plot(train_metric, color=line_color[0])
             ax.plot(test_metric, color=line_color[1])
             ax.legend(["Train", "Test"], loc=legend_loc)
-            ax.set_title(f"Model {input_metrics[0].capitalize()}")
-            ax.set_ylabel(input_metrics[0].capitalize())
+            ax.set_title(f"Model {label}")
+            ax.set_ylabel(label)
             ax.set_xlabel("Epoch")
             ax.grid(False)
 
