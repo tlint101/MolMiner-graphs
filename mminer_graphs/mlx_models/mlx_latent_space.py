@@ -33,6 +33,7 @@ class Base(mlx.nn.Module):
         """
         # check device
         fit_device = get_device(device)
+        mx.set_default_device(fit_device)
         model = self
 
         # check dataset input:
@@ -93,6 +94,7 @@ class Base(mlx.nn.Module):
         """
         # check device
         fit_device = get_device(device)
+        mx.set_default_device(fit_device)
         model = self
 
         # check dataset input:
