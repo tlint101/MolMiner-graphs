@@ -1,11 +1,12 @@
 [project]
 name = "MolMiner-graphs"
-version = "0.0.2"
+version = "0.0.3"
 description = "For Creating Molecular Graph Models"
 authors = [{ name = "Tony Eight Lin", email = "tonyelin@tmu.edu.tw" }]
 requires-python = ">=3.11"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -38,9 +39,16 @@ mlx = [
     "mlx-graphs (>=0.0.9)",
 ]
 
+[project.urls]
+GitHub = "https://github.com/tlint101/MolMiner-graphs"
+Codeberg = "https://codeberg.org/tlint101/MolMiner-graphs"
+Issues = "https://github.com/tlint101/MolMiner-graphs/issues"
+
 [tool.uv.build-backend]
 module-name = ["mminer_graphs"]
 module-root = ""
+source-exclude = ["**/.DS_Store"]
+wheel-exclude = ["**/.DS_Store"]
 
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
